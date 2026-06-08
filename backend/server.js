@@ -53,8 +53,8 @@ async function startAsyncScan(dir, existingFileNames) {
                     console.log(`[Scanner] New Book Found (${scanResults.total}): ${fileName}`);
                     
                     try {
-                        // 2. THROTTLING: Wait 2s to be safer with API limits
-                        await delay(2000);
+                        // 2. THROTTLING: Wait 3s to be safer with API limits (Google Books 429)
+                        await delay(3000);
                         
                         const metadata = await getBookMetadata(fileName);
                         metadata.fileName = fileName;

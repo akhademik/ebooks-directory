@@ -11,6 +11,7 @@ function normalizeString(str) {
     return str.normalize("NFD")
               .replace(/[\u0300-\u036f]/g, "")
               .replace(/đ/g, "d").replace(/Đ/g, "D")
+              .replace(/[^\x20-\x7E]/g, "") // Remove non-printable and non-ASCII characters
               .replace(/[^a-zA-Z0-9\s]/g, ' ')
               .replace(/\s+/g, ' ')
               .trim();
@@ -57,24 +58,14 @@ function parseFilename(filename) {
 
 async function fetchFromOpenLibrary(title, author = '', normalizedTitle = '') {
     try {
-        // Try searching with normalized title if original has special characters
-        const searchTitle = normalizedTitle || title;
-        const query = author ? `title=${encodeURIComponent(searchTitle)}&author=${encodeURIComponent(author)}` : `title=${encodeURIComponent(searchTitle)}`;
+        const searchTitle = normalizedTitle || normalizeString(title);
+        const searchAuthor = author ? normalizeString(author) : '';
+        const query = searchAuthor ? `title=${encodeURIComponent(searchTitle)}&author=${encodeURIComponent(searchAuthor)}` : `title=${encodeURIComponent(searchTitle)}`;
         const url = `https://openlibrary.org/search.json?${query}`;
         
         console.log(`[OpenLibrary] Searching: ${url}`);
-        const response = await axios.get(url, { timeout: 5000 });
+        const response = await axios.get(url, { timeout: 7000 });
         const docs = response.data.docs;
-
-        // If no results with (Title, Author), try just (Title) or (Author, Title) swapped
-        if ((!docs || docs.length === 0) && author) {
-            console.log(`[OpenLibrary] No results. Trying swapped Title/Author...`);
-            const swappedUrl = `https://openlibrary.org/search.json?title=${encodeURIComponent(author)}&author=${encodeURIComponent(searchTitle)}`;
-            const swappedRes = await axios.get(swappedUrl, { timeout: 5000 });
-            if (swappedRes.data.docs && swappedRes.data.docs.length > 0) {
-                return formatOLResult(swappedRes.data.docs[0]);
-            }
-        }
 
         if (docs && docs.length > 0) {
             return formatOLResult(docs[0]);
@@ -97,29 +88,44 @@ function formatOLResult(first) {
 }
 
 async function fetchFromGoogleBooks(title, author = '', normalizedTitle = '') {
-    try {
-        const searchTitle = normalizedTitle || title;
-        const query = author ? `intitle:${searchTitle}+inauthor:${author}` : `intitle:${searchTitle}`;
-        const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=1`;
-        
-        console.log(`[GoogleBooks] Searching: ${url}`);
-        const response = await axios.get(url, { timeout: 5000 });
-        const items = response.data.items;
+    const searchTitle = normalizedTitle || normalizeString(title);
+    const searchAuthor = author ? normalizeString(author) : '';
+    const apiKey = process.env.GOOGLE_BOOKS_API_KEY;
+    
+    const queryStr = `intitle:${searchTitle}+inauthor:${searchAuthor}`;
+    let url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}&maxResults=1`;
+    if (apiKey) url += `&key=${apiKey}`;
 
-        if (!items || items.length === 0) {
-            // Swap check
-            const swappedQuery = `intitle:${author}+inauthor:${searchTitle}`;
-            const swappedRes = await axios.get(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(swappedQuery)}&maxResults=1`, { timeout: 5000 });
-            if (swappedRes.data.items && swappedRes.data.items.length > 0) {
-                return formatGBResult(swappedRes.data.items[0]);
+    const makeRequest = async () => {
+        console.log(`[GoogleBooks] Searching: ${url.replace(apiKey, 'REDACTED')}`);
+        return await axios.get(url, { 
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-        }
+        });
+    };
 
-        if (items && items.length > 0) {
-            return formatGBResult(items[0]);
+    try {
+        const response = await makeRequest();
+        if (response.data.items && response.data.items.length > 0) {
+            return formatGBResult(response.data.items[0]);
         }
     } catch (error) {
-        console.error(`[GoogleBooks Error] ${error.message}`);
+        if (error.response && error.response.status === 429) {
+            console.log(`[GoogleBooks] Rate limited (429). Sleeping 15s before retry...`);
+            await new Promise(res => setTimeout(res, 15000));
+            try {
+                const retryResponse = await makeRequest();
+                if (retryResponse.data.items && retryResponse.data.items.length > 0) {
+                    return formatGBResult(retryResponse.data.items[0]);
+                }
+            } catch (retryError) {
+                console.error(`[GoogleBooks Retry Error] ${retryError.message}`);
+            }
+        } else {
+            console.error(`[GoogleBooks Error] ${error.message}`);
+        }
     }
     return null;
 }
@@ -138,21 +144,28 @@ function formatGBResult(item) {
 
 async function fetchFromGoodreads(title, author = '', normalizedTitle = '') {
     try {
-        const searchTitle = normalizedTitle || title;
-        const query = author ? `${searchTitle} ${author}` : searchTitle;
+        const searchTitle = normalizedTitle || normalizeString(title);
+        const searchAuthor = author ? normalizeString(author) : '';
+        const query = searchAuthor ? `${searchTitle} ${searchAuthor}` : searchTitle;
         const url = `https://www.goodreads.com/search?q=${encodeURIComponent(query)}`;
         
         console.log(`[Goodreads] Scraping: ${url}`);
         
         const response = await axios.get(url, {
-            timeout: 10000,
+            timeout: 15000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.google.com/'
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
             }
         });
+
+        if (response.data.includes('Robot Check') || response.data.includes('api-services-support@goodreads.com')) {
+            console.warn(`[Goodreads] Access blocked by Robot Check.`);
+            return null;
+        }
 
         const $ = cheerio.load(response.data);
         // Goodreads search results are in a table with class 'tableList'
