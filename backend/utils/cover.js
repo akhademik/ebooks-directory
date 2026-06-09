@@ -1,12 +1,10 @@
 const { EPub } = require('epub2');
-const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 /**
- * Extracts cover from EPUB file.
+ * Extracts cover from EPUB file as Buffer.
  */
-async function extractEpubCover(filePath, outputDir) {
+async function extractEpubCover(filePath) {
     return new Promise((resolve) => {
         const epub = new EPub(filePath);
         
@@ -18,29 +16,14 @@ async function extractEpubCover(filePath, outputDir) {
         epub.on('end', () => {
             const coverId = epub.metadata.cover;
             if (!coverId) {
-                console.log(`[Cover Extractor] No cover metadata found for: ${path.basename(filePath)}`);
                 return resolve(null);
             }
 
-            console.log(`[Cover Extractor] Found cover ID "${coverId}" for: ${path.basename(filePath)}. Extracting...`);
             epub.getImage(coverId, (err, data, mimeType) => {
-                if (err) {
-                    console.error(`[Cover Extractor] Error getting image for ${coverId}: ${err.message}`);
+                if (err || !data) {
                     return resolve(null);
                 }
-                if (!data) {
-                    console.error(`[Cover Extractor] No data returned for cover image ${coverId}`);
-                    return resolve(null);
-                }
-
-                const hash = crypto.createHash('sha256').update(filePath).digest('hex');
-                const ext = mimeType.split('/')[1] || 'jpg';
-                const fileName = `${hash}.${ext}`;
-                const outputPath = path.join(outputDir, fileName);
-
-                fs.writeFileSync(outputPath, data);
-                console.log(`[Cover Extractor] Successfully saved cover to: ${fileName}`);
-                resolve(`/covers/${fileName}`);
+                resolve({ data, mimeType: mimeType || 'image/jpeg' });
             });
         });
 
@@ -49,14 +32,14 @@ async function extractEpubCover(filePath, outputDir) {
 }
 
 /**
- * Main function to extract cover based on file extension.
+ * Main function to extract cover as Buffer on-the-fly.
  */
-async function extractEmbeddedCover(filePath, outputDir) {
+async function extractEmbeddedCover(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     
     try {
         if (ext === '.epub') {
-            return await extractEpubCover(filePath, outputDir);
+            return await extractEpubCover(filePath);
         }
         // Add more formats here later (MOBI, PDF, etc.)
     } catch (err) {

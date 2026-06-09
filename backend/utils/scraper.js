@@ -3,10 +3,27 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 /**
+ * Cleans search query by removing accents, special characters, and numbering.
+ * Properly handles Vietnamese 'đ'.
+ */
+function cleanSearchQuery(query) {
+    if (!query) return '';
+    return query
+        .replace(/[đĐ]/g, char => (char === 'đ' ? 'd' : 'D')) // Specifically handle 'đ'
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')    // Strip other accents
+        .replace(/^\d+[\s.-]+/, '') // Strip leading numbers
+        .replace(/[._]/g, ' ')      // Replace underscores/dots
+        .replace(/[^\w\s]/g, '')    // Remove special characters
+        .replace(/\s+/g, ' ')       // Collapse spaces
+        .trim();
+}
+
+/**
  * Scrapes book metadata from Goodreads.
  * Can search by title/author string or go directly to a Goodreads ID.
  */
 async function scrapeGoodreads(searchQuery, goodreadsId = '') {
+    console.log(`[Scraper] Launching browser for: ${goodreadsId || searchQuery}`);
     const browser = await puppeteer.launch({ 
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -25,8 +42,9 @@ async function scrapeGoodreads(searchQuery, goodreadsId = '') {
             console.log(`[Scraper] Going directly to Goodreads ID: ${goodreadsId}`);
             await page.goto(bookUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         } else {
-            const searchUrl = `https://www.goodreads.com/search?q=${encodeURIComponent(searchQuery)}`;
-            console.log(`[Scraper] Searching Goodreads for: ${searchQuery}`);
+            const cleanedQuery = cleanSearchQuery(searchQuery);
+            const searchUrl = `https://www.goodreads.com/search?q=${encodeURIComponent(cleanedQuery)}`;
+            console.log(`[Scraper] Searching Goodreads for: "${cleanedQuery}" (Original: "${searchQuery}")`);
             
             await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
             
@@ -75,9 +93,30 @@ async function scrapeGoodreads(searchQuery, goodreadsId = '') {
             
             const title = getTxt('h1[data-testid="bookTitle"]') || getTxt('#bookTitle');
             const author = getTxt('.ContributorLink__name') || getTxt('.authorName') || getTxt('[data-testid="name"]');
-            const ratingTxt = getTxt('.RatingStatistics__rating') || getTxt('[itemprop="ratingValue"]');
-            const cover = document.querySelector('.BookCover__image img')?.src || document.querySelector('#coverImage')?.src || '';
             
+            // Extract full rating info
+            const ratingTxt = getTxt('.RatingStatistics__rating') || getTxt('[itemprop="ratingValue"]');
+            const ratingCount = getTxt('[data-testid="ratingsCount"]') || 
+                                getTxt('.minirating') || 
+                                getTxt('.RatingStatistics__meta > [data-testid="ratingsCount"]') ||
+                                getTxt('#bookMeta .greyText.uitext');
+            
+            console.log(`[Scraper Debug] Raw Rating Count: "${ratingCount}"`);
+            
+            let finalRating = isNaN(parseFloat(ratingTxt)) ? 'N/A' : parseFloat(ratingTxt).toFixed(2);
+            let finalRatingCount = '';
+            if (ratingCount) {
+                // eslint-disable-next-line sonarjs/slow-regex
+                const match = /([\d,]+)\s+ratings?/.exec(ratingCount);
+                if (match) {
+                    finalRatingCount = match[1].replace(/,/g, '');
+                } else if (ratingCount.includes('ratings')) {
+                    finalRatingCount = ratingCount.replace(/[^\d]/g, '');
+                }
+            }
+
+            const cover = document.querySelector('.BookCover__image img')?.src || document.querySelector('#coverImage')?.src || '';
+
             const pubInfo = getTxt('.FeaturedDetails p[data-testid="publicationInfo"]') || getTxt('#details .row:last-child') || '';
             const yearMatch = pubInfo.match(/(\d{4})/);
             const year = yearMatch ? yearMatch[1] : 'N/A';
@@ -90,12 +129,14 @@ async function scrapeGoodreads(searchQuery, goodreadsId = '') {
             return { 
                 title, 
                 author, 
-                rating: isNaN(parseFloat(ratingTxt)) ? 'N/A' : parseFloat(ratingTxt).toFixed(1), 
+                rating: finalRating, 
+                ratingCount: finalRatingCount,
                 cover, 
                 year,
                 url,
                 goodreadsId: extractedId
             };
+
         });
 
         await browser.close();

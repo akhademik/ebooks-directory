@@ -3,96 +3,117 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Personal Book Library</title>
+    <title>Ebook Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
-<body class="bg-slate-950 min-h-screen text-slate-200">
-
-    <!-- Header -->
-    <header class="bg-slate-900 shadow-xl sticky top-0 z-10 border-b border-slate-800">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
-            <div class="flex items-center gap-2">
-                <div class="bg-indigo-500 p-2 rounded-lg text-white">
-                    <i class="fas fa-book-open text-xl"></i>
-                </div>
-                <h1 class="text-2xl font-bold text-white tracking-tight">BookLibrary</h1>
+<body class="bg-[#0b0f1a] text-slate-300 min-h-screen font-sans">
+    
+    <!-- Top Status Bar -->
+    <div id="statusArea" class="hidden sticky top-0 z-[60] bg-indigo-900/90 backdrop-blur-md border-b border-indigo-500/30 px-6 py-2 shadow-2xl">
+        <div class="max-w-[1600px] mx-auto flex items-center justify-between gap-6 text-xs font-bold tracking-wider uppercase">
+            <div class="flex items-center gap-3">
+                <i class="fas fa-circle-notch fa-spin text-indigo-400"></i>
+                <span id="statusText" class="text-indigo-100">Scanning Library...</span>
             </div>
-
-            <div class="flex flex-1 max-w-xl w-full">
-                <div class="relative w-full">
-                    <input type="text" id="searchInput" placeholder="Search by title or author..." 
-                           class="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-full text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-                    <i class="fas fa-search absolute left-4 top-3 text-slate-500"></i>
-                </div>
+            <div class="flex-1 max-w-md bg-slate-950/50 rounded-full h-1.5 overflow-hidden border border-white/5">
+                <div id="progressBar" class="bg-gradient-to-r from-indigo-500 to-purple-500 h-full transition-all duration-500" style="width: 0%"></div>
             </div>
+            <div id="scanProgress" class="text-indigo-200 min-w-[60px] text-right">0/0</div>
+        </div>
+    </div>
 
-            <div class="flex gap-2">
-                <div class="flex bg-slate-800 p-1 rounded-lg mr-2 border border-slate-700">
-                    <button id="gridBtn" class="p-2 rounded-md transition-all text-indigo-400 bg-slate-700 shadow-sm" title="Grid View">
-                        <i class="fas fa-th-large"></i>
-                    </button>
-                    <button id="listBtn" class="p-2 rounded-md transition-all text-slate-400 hover:text-slate-200" title="List View">
-                        <i class="fas fa-list"></i>
-                    </button>
-                </div>
-                <button id="scanBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 shadow-lg shadow-indigo-900/20">
-                    <i class="fas fa-sync-alt" id="scanIcon"></i>
+    <!-- Main Container -->
+    <main class="max-w-[1600px] mx-auto p-4 md:p-8">
+        
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
+            <div>
+                <h1 class="text-3xl font-black text-white tracking-tight mb-1 flex items-center gap-3">
+                    <i class="fas fa-books text-indigo-500"></i>
+                    EBOOK <span class="text-indigo-400 italic">MANAGER</span>
+                </h1>
+                <p class="text-slate-500 text-sm font-medium">Personal digital library on your NAS</p>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <button id="scanBtn" class="bg-indigo-600/10 hover:bg-indigo-600 border border-indigo-500/30 text-indigo-400 hover:text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-widest transition-all flex items-center gap-2 group">
+                    <i class="fas fa-sync-alt group-hover:rotate-180 transition-transform duration-500" id="scanIcon"></i>
                     <span>Scan Library</span>
                 </button>
             </div>
-        </div>
-    </header>
+        </header>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Status Bar -->
-        <div id="statusArea" class="hidden mb-6 p-4 rounded-lg bg-slate-900 border border-indigo-500/30 flex flex-col gap-2">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3">
-                    <div class="animate-spin text-indigo-400">
-                        <i class="fas fa-circle-notch"></i>
-                    </div>
-                    <span class="text-slate-300 font-medium" id="statusText">Scanning NAS...</span>
+        <!-- Library Table -->
+        <div class="bg-[#121826] rounded-2xl border border-slate-800 shadow-2xl overflow-hidden">
+            
+            <!-- Table Header -->
+            <div class="grid grid-cols-[50px_1fr_100px_100px_120px_120px] gap-4 px-6 py-4 bg-[#1a2133] border-b border-slate-800 text-[10px] font-black uppercase tracking-[0.1em] text-slate-500 items-center">
+                <div>#</div>
+                <div class="flex items-center gap-2 cursor-pointer hover:text-indigo-400">TÊN SÁCH / TÁC GIẢ <i class="fas fa-sort"></i></div>
+                <div class="flex items-center gap-2 cursor-pointer hover:text-indigo-400">LOẠI <i class="fas fa-sort"></i></div>
+                <div class="flex items-center gap-2 cursor-pointer hover:text-indigo-400">SIZE <i class="fas fa-sort"></i></div>
+                <div class="text-center">XEM</div>
+                <div class="text-center">TẢI VỀ</div>
+            </div>
+
+            <!-- Filter Row -->
+            <div class="grid grid-cols-[50px_1fr_100px_100px_120px_120px] gap-4 px-6 py-3 bg-[#0b0f1a]/50 border-b border-slate-800/50 items-center">
+                <div></div>
+                <div class="relative group">
+                    <i class="fas fa-search absolute left-3 top-2.5 text-slate-600 group-focus-within:text-indigo-500 transition-colors text-[10px]"></i>
+                    <input type="text" id="searchInput" placeholder="Tìm theo tên sách / tác giả..." class="w-full bg-[#1a2133] border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-[11px] font-medium text-slate-300 focus:outline-none focus:border-indigo-500/50 placeholder:text-slate-600">
                 </div>
-                <span id="scanProgress" class="text-xs font-mono text-indigo-400">0/0</span>
+                <div>
+                    <select id="typeFilter" class="w-full bg-[#1a2133] border border-slate-700 rounded-lg px-3 py-1.5 text-[11px] font-bold text-slate-300 focus:outline-none focus:border-indigo-500/50 appearance-none cursor-pointer">
+                        <option value="">-- Tất cả --</option>
+                        <option value="epub">EPUB</option>
+                        <option value="pdf">PDF</option>
+                        <option value="mobi">MOBI</option>
+                        <option value="azw3">AZW3</option>
+                    </select>
+                </div>
+                <div>
+                    <input type="text" placeholder="Min MB" class="w-full bg-[#1a2133] border border-slate-700 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-300 focus:outline-none focus:border-indigo-500/50 placeholder:text-slate-600 text-center">
+                </div>
+                <div></div>
+                <div></div>
             </div>
-            <div class="w-full bg-slate-800 rounded-full h-1.5">
-                <div id="progressBar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-            </div>
-        </div>
 
-        <!-- Grid -->
-        <div id="bookGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
-            <!-- Loading Skeletons -->
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
-            <div class="animate-pulse bg-slate-900 rounded-xl h-64 border border-slate-800"></div>
+            <!-- Table Body -->
+            <div id="bookGrid" class="divide-y divide-slate-800/50">
+                <!-- Rows injected here -->
+            </div>
         </div>
 
         <!-- Empty State -->
-        <div id="emptyState" class="hidden flex flex-col items-center justify-center py-20 text-slate-400">
-            <i class="fas fa-books text-6xl mb-4 opacity-20"></i>
-            <p class="text-xl font-medium">No books found.</p>
-            <p class="text-sm">Try scanning your library or adjust your search.</p>
+        <div id="emptyState" class="hidden flex flex-col items-center justify-center py-32 text-slate-600">
+            <div class="w-24 h-24 bg-slate-900 rounded-full flex items-center justify-center mb-6 border border-slate-800">
+                <i class="fas fa-book-open text-4xl opacity-20"></i>
+            </div>
+            <p class="text-xl font-black text-slate-500 tracking-tight">NO BOOKS DISCOVERED</p>
+            <p class="text-sm font-medium mt-2">Scan your library or try a different search</p>
         </div>
     </main>
 
     <!-- Preview Modal -->
-    <div id="previewModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-black/90 backdrop-blur-sm" id="modalOverlay"></div>
-        <div class="bg-slate-900 w-full max-w-5xl h-[90vh] rounded-2xl relative z-10 flex flex-col overflow-hidden border border-slate-800 shadow-2xl">
-            <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
-                <h2 id="previewTitle" class="text-lg font-bold text-white truncate pr-4">Book Preview</h2>
-                <button id="closeModal" class="text-slate-400 hover:text-white transition-colors p-2">
-                    <i class="fas fa-times text-xl"></i>
+    <div id="previewModal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/95 backdrop-blur-md" id="modalOverlay"></div>
+        <div class="bg-[#0b0f1a] w-full max-w-6xl h-[92vh] rounded-3xl relative z-10 flex flex-col overflow-hidden border border-white/10 shadow-[0_0_100px_rgba(0,0,0,0.8)]">
+            <div class="p-6 border-b border-white/5 flex justify-between items-center bg-[#121826]">
+                <div class="flex items-center gap-4">
+                    <div class="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                        <i class="fas fa-eye text-white text-sm"></i>
+                    </div>
+                    <h2 id="previewTitle" class="text-lg font-black text-white truncate max-w-2xl">Book Preview</h2>
+                </div>
+                <button id="closeModal" class="w-10 h-10 rounded-full bg-slate-900 hover:bg-red-500/20 hover:text-red-400 text-slate-500 transition-all flex items-center justify-center border border-white/5">
+                    <i class="fas fa-times text-lg"></i>
                 </button>
             </div>
-            <div id="previewContent" class="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-950">
-                <!-- Content will be injected here -->
+            <div id="previewContent" class="flex-1 overflow-y-auto p-8 md:p-12 bg-[#0b0f1a] custom-scrollbar">
+                <!-- Content -->
             </div>
         </div>
     </div>

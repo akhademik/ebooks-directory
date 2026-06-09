@@ -1,5 +1,5 @@
 const path = require('path');
-const { extractEmbeddedCover } = require('./utils/cover');
+const fs = require('fs');
 const { scrapeGoodreads } = require('./utils/scraper');
 
 /**
@@ -37,46 +37,54 @@ function parseFilename(filename) {
 }
 
 /**
- * Fetches metadata from Goodreads using a scraper.
- * Prioritizes embedded cover extraction.
+ * Fast function to get basic info from filename + file stats.
  */
-async function getBookMetadata(filename, relativePath, absolutePath, coversDir, goodreadsId = '') {
+function getBasicInfo(filename, relativePath, absolutePath) {
     const parsed = parseFilename(filename);
+    const stats = fs.statSync(absolutePath);
     
-    // 1. Try to extract embedded cover first
-    const embeddedCover = await extractEmbeddedCover(absolutePath, coversDir);
-
-    let metadata = {
+    return {
         title: parsed.title,
         author: parsed.author,
         year: 'N/A',
-        cover: embeddedCover,
         rating: 'N/A',
+        ratingCount: '',
+        size: (stats.size / (1024 * 1024)).toFixed(2), // MB
+        cover: null,
         source: 'Filename Parser',
         extension: parsed.extension,
         location: relativePath,
+        goodreadsCheck: 'No',
+        goodreadsId: ''
+    };
+}
+
+/**
+ * Fetches metadata from Goodreads using a scraper.
+ */
+async function getBookMetadata(filename, relativePath, goodreadsId = '', basicInfo = null) {
+    const info = basicInfo || { title: filename, author: 'Unknown' };
+
+    let metadata = {
+        ...info,
         goodreadsCheck: 'Yes',
         goodreadsId: goodreadsId
     };
 
-    // 2. Lookup on Goodreads
-    // If goodreadsId is provided, we use it directly in the scraper
-    const searchQuery = `${parsed.title} ${parsed.author !== 'Unknown' ? parsed.author : ''}`.trim();
+    // 1. Lookup on Goodreads
+    const searchQuery = `${info.title} ${info.author !== 'Unknown' ? info.author : ''}`.trim();
     const result = await scrapeGoodreads(searchQuery, goodreadsId);
 
     if (result) {
         console.log(`[Scanner] Found match on Goodreads: ${result.title}`);
         metadata.title = result.title;
-        metadata.author = result.author || parsed.author;
+        metadata.author = result.author || info.author;
         metadata.year = result.year || 'N/A';
         metadata.rating = result.rating || 'N/A';
+        metadata.ratingCount = result.ratingCount || '';
         metadata.source = 'Goodreads';
         metadata.goodreadsId = result.goodreadsId || goodreadsId;
-        
-        // Only use Goodreads cover if we didn't find an embedded one
-        if (!metadata.cover && result.cover) {
-            metadata.cover = result.cover;
-        }
+        metadata.cover = result.cover || null;
     } else {
         console.log(`[Scanner] No match found on Goodreads for: ${filename}`);
     }
@@ -84,4 +92,4 @@ async function getBookMetadata(filename, relativePath, absolutePath, coversDir, 
     return metadata;
 }
 
-module.exports = { parseFilename, getBookMetadata };
+module.exports = { parseFilename, getBookMetadata, getBasicInfo };

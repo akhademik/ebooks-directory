@@ -1,10 +1,12 @@
 let allBooks = [];
-let currentView = 'grid'; // 'grid' or 'list'
+let currentPage = 1;
+const BOOKS_PER_PAGE = 20;
 
 const ELEMENTS = {
     bookGrid: () => document.getElementById('bookGrid'),
     emptyState: () => document.getElementById('emptyState'),
     searchInput: () => document.getElementById('searchInput'),
+    typeFilter: () => document.getElementById('typeFilter'),
     scanBtn: () => document.getElementById('scanBtn'),
     scanIcon: () => document.getElementById('scanIcon'),
     statusArea: () => document.getElementById('statusArea'),
@@ -15,128 +17,173 @@ const ELEMENTS = {
     modalOverlay: () => document.getElementById('modalOverlay'),
     closeModal: () => document.getElementById('closeModal'),
     previewTitle: () => document.getElementById('previewTitle'),
-    previewContent: () => document.getElementById('previewContent'),
-    gridBtn: () => document.getElementById('gridBtn'),
-    listBtn: () => document.getElementById('listBtn')
+    previewContent: () => document.getElementById('previewContent')
 };
 
 const UI_CLASSES = {
     disabled: 'opacity-50',
     noCursor: 'cursor-not-allowed',
     spinning: 'spinning',
-    hidden: 'hidden',
-    activeBtn: ['bg-slate-700', 'text-indigo-400', 'shadow-sm'],
-    inactiveBtn: ['text-slate-400', 'hover:text-slate-200']
+    hidden: 'hidden'
 };
+
+const SUPPORTED_PREVIEW_EXTS = ['pdf', 'epub'];
 
 document.addEventListener('DOMContentLoaded', () => {
     fetchBooks();
+    startScan(); 
 
-    ELEMENTS.searchInput().addEventListener('input', (e) => {
-        filterBooks(e.target.value);
-    });
+    // Filters
+    ELEMENTS.searchInput().addEventListener('input', () => resetAndRender());
+    ELEMENTS.typeFilter().addEventListener('change', () => resetAndRender());
 
     ELEMENTS.scanBtn().addEventListener('click', startScan);
     
     ELEMENTS.closeModal().addEventListener('click', hidePreview);
     ELEMENTS.modalOverlay().addEventListener('click', hidePreview);
 
-    ELEMENTS.gridBtn().addEventListener('click', () => switchView('grid'));
-    ELEMENTS.listBtn().addEventListener('click', () => switchView('list'));
+    // Infinite Scroll - Bind to window, check scrolling
+    window.addEventListener('scroll', () => {
+        // Optimized check: 200px before end
+        const scrollPosition = window.innerHeight + window.scrollY;
+        const pageHeight = document.documentElement.scrollHeight;
+        if (scrollPosition >= pageHeight - 500) {
+            loadNextPage();
+        }
+    });
 });
 
-function switchView(view) {
-    currentView = view;
-    const gridBtn = ELEMENTS.gridBtn();
-    const listBtn = ELEMENTS.listBtn();
-    const grid = ELEMENTS.bookGrid();
+function resetAndRender() {
+    currentPage = 1;
+    renderBooks(getFilteredBooks());
+}
 
-    if (view === 'grid') {
-        gridBtn.classList.add(...UI_CLASSES.activeBtn);
-        gridBtn.classList.remove(...UI_CLASSES.inactiveBtn);
-        listBtn.classList.remove(...UI_CLASSES.activeBtn);
-        listBtn.classList.add(...UI_CLASSES.inactiveBtn);
-        grid.classList.remove('list-view');
-    } else {
-        listBtn.classList.add(...UI_CLASSES.activeBtn);
-        listBtn.classList.remove(...UI_CLASSES.inactiveBtn);
-        gridBtn.classList.remove(...UI_CLASSES.activeBtn);
-        gridBtn.classList.add(...UI_CLASSES.inactiveBtn);
-        grid.classList.add('list-view');
-    }
-    renderBooks(allBooks);
+function getFilteredBooks() {
+    const query = ELEMENTS.searchInput().value.toLowerCase();
+    const type = ELEMENTS.typeFilter().value;
+
+    return allBooks.filter(book => {
+        const matchesSearch = (book.title || '').toLowerCase().includes(query) || 
+                              (book.author || '').toLowerCase().includes(query);
+        const matchesType = !type || (book.location || '').toLowerCase().endsWith(type);
+        return matchesSearch && matchesType;
+    });
+}
+
+function loadNextPage() {
+    const filtered = getFilteredBooks();
+    if (currentPage * BOOKS_PER_PAGE >= filtered.length) return;
+    
+    currentPage++;
+    renderBooks(filtered, true);
 }
 
 async function fetchBooks() {
     try {
         const response = await fetch('/api/books');
         allBooks = await response.json();
-        renderBooks(allBooks);
+        renderBooks(getFilteredBooks());
     } catch (error) {
         console.error('Error fetching books:', error);
-        showError('Could not load books. Is the server running?');
+        showError('Could not load books.');
     }
 }
 
-function renderBooks(books) {
+function formatRatingCount(countStr) {
+    if (!countStr) return '';
+    const num = parseInt(countStr.toString().replace(/,/g, ''), 10);
+    if (isNaN(num)) return countStr;
+    if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return num.toString();
+}
+
+function renderBooks(books, append = false) {
     const grid = ELEMENTS.bookGrid();
     const emptyState = ELEMENTS.emptyState();
     
-    grid.innerHTML = '';
+    if (!append) grid.innerHTML = '';
     
     if (books.length === 0) {
-        emptyState.classList.remove(UI_CLASSES.hidden);
+        if (!append) emptyState.classList.remove(UI_CLASSES.hidden);
         return;
     }
     
     emptyState.classList.add(UI_CLASSES.hidden);
+
+    const start = append ? (currentPage - 1) * BOOKS_PER_PAGE : 0;
+    const end = currentPage * BOOKS_PER_PAGE;
+    const paginatedBooks = books.slice(start, end);
     
-    books.forEach((book, index) => {
-        const card = document.createElement('div');
-        card.className = 'book-card bg-slate-900 rounded-xl overflow-hidden shadow-lg border border-slate-800 flex flex-col relative cursor-pointer hover:border-indigo-500/50 transition-all active:scale-95';
-        card.style.animationDelay = `${index * 0.02}s`;
-        card.onclick = () => showPreview(book);
-        
-        const coverUrl = book.cover && book.cover !== 'null' ? book.cover : `https://ui-avatars.com/api/?name=${encodeURIComponent(book.title)}&size=300&background=1e293b&color=6366f1&bold=true&format=svg`;
-        const ratingStars = isNaN(book.rating) || !book.rating ? '' : '★'.repeat(Math.round(book.rating)) + '☆'.repeat(5 - Math.round(book.rating));
+    paginatedBooks.forEach((book, index) => {
+        const globalIndex = start + index + 1;
+        const row = document.createElement('div');
+        row.className = 'book-card list-view-grid hover:bg-white/5 transition-colors group relative';
         
         const ext = book.location ? book.location.split('.').pop().toLowerCase() : 'book';
-        const badgeClass = `badge-${ext}`;
+        const isSupported = SUPPORTED_PREVIEW_EXTS.includes(ext);
 
-        const badgeHtml = `<div class="format-badge ${badgeClass}">${ext}</div>`;
+        const defaultCover = `https://ui-avatars.com/api/?name=${encodeURIComponent(book.title)}&size=100&background=1e293b&color=6366f1&bold=true&format=svg`;
+        let coverUrl = defaultCover;
+        if (book.cover && book.cover.startsWith('http')) {
+            coverUrl = book.cover;
+        } else if (book.rowIndex) {
+            coverUrl = `/api/cover/${book.rowIndex}`;
+        }
 
-        card.innerHTML = `
-            ${currentView === 'grid' ? badgeHtml : ''}
-            <div class="cover-container relative group bg-slate-800">
-                <img src="${coverUrl}" alt="${book.title}" class="cover-img w-full h-full object-cover" loading="lazy" 
-                     onerror="this.onerror=null; this.src='https://via.placeholder.com/300x450/1e293b/64748b?text=No+Cover'">
-                ${currentView === 'grid' ? `
-                <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                    <i class="fas fa-eye text-white text-2xl"></i>
-                </div>` : ''}
-            </div>
+        const ratingNum = parseFloat(book.rating);
+        const ratingStars = isNaN(ratingNum) ? '' : '★'.repeat(Math.round(ratingNum));
+        const formattedCount = formatRatingCount(book.ratingCount);
+        const ratingDisplay = book.rating !== 'N/A' && book.rating !== '' ? book.rating : '';
+        
+        let combinedRating = '';
+        if (ratingDisplay) {
+            combinedRating = ratingDisplay;
+            if (formattedCount) {
+                combinedRating += ` (${formattedCount})`;
+            }
+        }
+        
+        const goodreadsUrl = book.goodreadsId ? `https://www.goodreads.com/book/show/${book.goodreadsId}` : '';
+        const titleHtml = goodreadsUrl 
+            ? `<a href="${goodreadsUrl}" target="_blank" class="text-white font-bold hover:text-indigo-400 transition-colors" title="View on Goodreads">${book.title}</a>`
+            : `<span class="text-white font-bold">${book.title}</span>`;
 
-            <div class="p-3">
-                <h3 class="font-bold text-slate-100 line-clamp-2 leading-snug" title="${book.title}">${book.title}</h3>
-                <p class="author-text text-slate-400 truncate">${book.author}</p>
-                <div class="meta-text text-slate-500">
-                    <span class="font-bold text-indigo-400/80">${book.year !== 'N/A' ? book.year : ''}</span>
-                    <span class="text-amber-500/80">${ratingStars}</span>
+        row.innerHTML = `
+            <div class="text-slate-600 font-bold text-xs">${globalIndex}</div>
+            <div class="flex items-center gap-4 min-w-0">
+                <div class="w-10 h-14 bg-slate-800 rounded flex-shrink-0 overflow-hidden shadow-lg group-hover:scale-110 transition-transform cursor-pointer" onclick='showPreview(${JSON.stringify(book).replace(/'/g, "\\'").replace(/"/g, '&quot;')})'>
+                    <img src="${coverUrl}" class="w-full h-full object-cover" loading="lazy" onerror="this.onerror=null; this.src='${defaultCover}'">
                 </div>
-                ${currentView === 'list' ? badgeHtml : ''}
+                <div class="min-w-0 flex flex-col justify-center">
+                    <div class="truncate text-sm mb-0.5 leading-tight">${titleHtml}</div>
+                    <div class="truncate text-[11px] text-slate-500 font-medium">${book.author}</div>
+                    <div class="flex items-center gap-2 mt-1">
+                        <span class="star-rating">${ratingStars}</span>
+                        <span class="text-[9px] text-slate-600 font-bold tracking-tight">${combinedRating}</span>
+                    </div>
+                </div>
             </div>
-            ${book.status === 'manual' ? '<div class="absolute top-2 right-2 bg-amber-500 text-white p-1 rounded-full text-[8px] shadow-sm flex items-center justify-center w-5 h-5"><i class="fas fa-user-edit"></i></div>' : ''}
+            <div>
+                <span class="format-badge badge-${ext}">${ext}</span>
+            </div>
+            <div class="text-slate-500 text-xs font-mono">${book.size || '0.00'} MB</div>
+            <div class="flex justify-center">
+                <button class="action-btn btn-xem ${!isSupported ? 'opacity-20 cursor-not-allowed' : ''}" 
+                        onclick='showPreview(${JSON.stringify(book).replace(/'/g, "\\'").replace(/"/g, '&quot;')})' 
+                        ${!isSupported ? 'disabled' : ''}>
+                    <i class="fas fa-eye"></i> Xem
+                </button>
+            </div>
+            <div class="flex justify-center">
+                <a href="/api/download/${book.rowIndex}" class="action-btn btn-tai">
+                    <i class="fas fa-cloud-download-alt"></i> Tải
+                </a>
+            </div>
+            ${book.status === 'manual' ? '<div class="absolute top-0 right-0 bg-amber-500 text-white px-2 py-0.5 rounded-bl-lg text-[9px] font-bold">MANUAL</div>' : ''}
         `;
-        grid.appendChild(card);
+        grid.appendChild(row);
     });
-}
-
-function filterBooks(query) {
-    const filtered = allBooks.filter(book => 
-        book.title.toLowerCase().includes(query.toLowerCase()) || 
-        book.author.toLowerCase().includes(query.toLowerCase())
-    );
-    renderBooks(filtered);
 }
 
 function hidePreview() {
@@ -144,61 +191,32 @@ function hidePreview() {
     document.body.style.overflow = '';
 }
 
+// eslint-disable-next-line no-unused-vars, sonarjs/no-unused-vars
 async function showPreview(book) {
     const modal = ELEMENTS.previewModal();
     const title = ELEMENTS.previewTitle();
     const content = ELEMENTS.previewContent();
 
-    title.innerText = `Preview: ${book.title}`;
-    content.innerHTML = `
-        <div class="flex flex-col items-center justify-center py-20 text-indigo-400">
-            <div class="animate-spin text-4xl mb-4">
-                <i class="fas fa-circle-notch"></i>
-            </div>
-            <p class="font-medium">Generating your preview...</p>
-        </div>
-    `;
+    title.innerText = `${book.title}`;
+    content.innerHTML = `<div class="flex flex-col items-center justify-center py-20 text-indigo-400"><div class="animate-spin text-4xl mb-4"><i class="fas fa-circle-notch"></i></div><p class="font-bold tracking-widest text-xs uppercase">Preparing Preview</p></div>`;
     
     modal.classList.remove(UI_CLASSES.hidden);
     document.body.style.overflow = 'hidden';
 
     try {
         const response = await fetch(`/api/preview/${book.rowIndex}`);
+        if (!response.ok) throw new Error('Preview unavailable');
         const data = await response.json();
 
         if (data.type === 'pdf') {
-            content.innerHTML = `
-                <div class="flex flex-col gap-8 max-w-3xl mx-auto">
-                    ${data.images.map(img => `
-                        <div class="bg-white rounded-lg shadow-2xl overflow-hidden border border-slate-800">
-                            <img src="${img}" class="w-full h-auto" loading="lazy">
-                        </div>
-                    `).join('')}
-                    <div class="py-10 text-center text-slate-500 text-sm italic">
-                        Preview ends here.
-                    </div>
-                </div>
-            `;
+            const imagesHtml = data.images.map(img => `<div class="bg-white rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden border border-white/10"><img src="${img}" class="w-full h-auto"></div>`).join('');
+            content.innerHTML = `<div class="flex flex-col gap-12 max-w-4xl mx-auto">${imagesHtml}<div class="py-20 text-center text-slate-600 text-xs font-bold uppercase tracking-widest">End of Preview</div></div>`;
         } else if (data.type === 'epub') {
-            content.innerHTML = `
-                <div class="max-w-2xl mx-auto prose prose-invert prose-slate prose-indigo">
-                    ${data.chapters.map(chap => `
-                        <div class="mb-12">
-                            <h2 class="text-2xl font-bold text-indigo-400 border-b border-slate-800 pb-2 mb-6">${chap.title}</h2>
-                            <div class="epub-preview-content text-slate-300 leading-relaxed text-lg">
-                                ${chap.content}
-                            </div>
-                        </div>
-                    `).join('')}
-                    <div class="py-10 text-center text-slate-500 text-sm italic border-t border-slate-800">
-                        Preview ends here.
-                    </div>
-                </div>
-            `;
+            const chaptersHtml = data.chapters.map(chap => `<div class="mb-12"><div class="epub-preview-content text-lg leading-relaxed">${chap.content}</div></div>`).join('');
+            content.innerHTML = `<div class="max-w-3xl mx-auto prose prose-invert prose-indigo">${chaptersHtml}<div class="py-20 text-center text-slate-600 text-xs font-bold uppercase tracking-widest border-t border-white/5">End of Preview</div></div>`;
         }
     } catch (error) {
-        console.error('Preview error:', error);
-        content.innerHTML = `<div class="text-center py-20 text-red-400">Could not load preview. ${error.message}</div>`;
+        content.innerHTML = `<div class="text-center py-24 text-red-400 font-bold italic tracking-wide"><i class="fas fa-exclamation-triangle text-4xl mb-6 opacity-20 block"></i><p>PREVIEW FAILED: ${error.message.toUpperCase()}</p></div>`;
     }
 }
 
@@ -211,63 +229,58 @@ async function startScan() {
     const progressBar = ELEMENTS.progressBar();
 
     scanBtn.disabled = true;
-    scanBtn.classList.add(UI_CLASSES.disabled, UI_CLASSES.noCursor);
+    scanBtn.classList.add(UI_CLASSES.disabled);
     scanIcon.classList.add(UI_CLASSES.spinning);
     statusArea.classList.remove(UI_CLASSES.hidden);
     
     let lastProcessed = -1;
 
-    // Start scanning
     try {
         await fetch('/api/scan');
     } catch (error) {
-        console.error('Failed to trigger scan:', error);
-        showError('Could not start scan.');
+        console.error('Scan error:', error);
         return;
     }
 
-    // Polling status
     const pollStatus = setInterval(async () => {
         try {
             const response = await fetch('/api/scan/status');
             const data = await response.json();
-            const { isScanning, results } = data;
+            const { isScanning, isEnriching, results, enrichment } = data;
 
-            // Update Progress Bar
-            if (results.total > 0) {
-                const percent = Math.round((results.processed / results.total) * 100);
+            if (isScanning) {
+                const percent = Math.round((results.processed / results.total) * 100) || 0;
                 progressBar.style.width = `${percent}%`;
                 scanProgress.innerText = `${results.processed}/${results.total}`;
-                statusText.innerText = `Scanning: ${results.processed} of ${results.total} books...`;
-            } else {
-                statusText.innerText = "Finding books on NAS...";
-            }
-
-            // Only fetch books if something was actually added to Sheets
-            if (results.added > lastProcessed) {
-                lastProcessed = results.added;
-                fetchBooks();
-            }
-
-            if (!isScanning) {
-                clearInterval(pollStatus);
-                statusText.innerText = `Scan Complete! Total: ${results.total}, New: ${results.added}, Skipped: ${results.skipped}.`;
-                progressBar.style.width = '100%';
+                statusText.innerText = `Pha 1: Quét hệ thống...`;
+            } else if (isEnriching) {
+                const percent = Math.round((enrichment.current / enrichment.total) * 100) || 0;
+                progressBar.style.width = `${percent}%`;
+                scanProgress.innerText = `${enrichment.current}/${enrichment.total}`;
+                statusText.innerText = `Pha 2: Goodreads [${enrichment.currentTitle}]`;
                 
-                setTimeout(() => {
-                    statusArea.classList.add(UI_CLASSES.hidden);
-                    scanBtn.disabled = false;
-                    scanBtn.classList.remove(UI_CLASSES.disabled, UI_CLASSES.noCursor);
-                    scanIcon.classList.remove(UI_CLASSES.spinning);
-                }, 5000);
+                if (enrichment.current > lastProcessed) {
+                    lastProcessed = enrichment.current;
+                    fetchBooks();
+                }
+            }
+
+            if (!isScanning && !isEnriching) {
+                clearInterval(pollStatus);
+                statusText.innerText = `Library Sync Complete`;
+                progressBar.style.width = '100%';
+                fetchBooks();
+                setTimeout(() => statusArea.classList.add(UI_CLASSES.hidden), 3000);
+                scanBtn.disabled = false;
+                scanBtn.classList.remove(UI_CLASSES.disabled);
+                scanIcon.classList.remove(UI_CLASSES.spinning);
             }
         } catch (error) {
             console.error('Polling error:', error);
         }
-    }, 1500);
+    }, 2000);
 }
 
 function showError(msg) {
-    const grid = ELEMENTS.bookGrid();
-    grid.innerHTML = `<div class="col-span-full text-center py-20 text-red-400 font-medium">${msg}</div>`;
+    ELEMENTS.bookGrid().innerHTML = `<div class="col-span-full text-center py-32 text-red-500 font-black tracking-widest uppercase text-xs">${msg}</div>`;
 }
