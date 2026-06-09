@@ -269,13 +269,43 @@ app.get('/api/books', async (req, res) => {
     }
 });
 
+/**
+ * Helper to get absolute path and handle Unicode normalization mismatches
+ */
+async function getValidatedPath(relativeLocation) {
+    const absolutePath = path.resolve(BOOKS_PATH, relativeLocation);
+    try {
+        await fs.access(absolutePath);
+        return absolutePath;
+    } catch (e) {
+        // Try NFC normalization (common fix for Mac/Linux mismatches)
+        const nfcPath = path.resolve(BOOKS_PATH, relativeLocation.normalize('NFC'));
+        try {
+            await fs.access(nfcPath);
+            return nfcPath;
+        } catch (e2) {
+            // Try NFD normalization
+            const nfdPath = path.resolve(BOOKS_PATH, relativeLocation.normalize('NFD'));
+            try {
+                await fs.access(nfdPath);
+                return nfdPath;
+            } catch (e3) {
+                return null;
+            }
+        }
+    }
+}
+
 app.get('/api/preview/:rowIndex', async (req, res) => {
     try {
         const rowIndex = parseInt(req.params.rowIndex);
         const books = await getAllBooks(SHEET_ID);
         const book = books.find(b => b.rowIndex === rowIndex);
         if (!book) return res.status(404).json({ error: ERR_BOOK_NOT_FOUND });
-        const absolutePath = path.resolve(BOOKS_PATH, book.location);
+        
+        const absolutePath = await getValidatedPath(book.location);
+        if (!absolutePath) return res.status(404).json({ error: `File not found: ${book.location}` });
+        
         const previewData = await getPreview(absolutePath);
         if (!previewData) return res.status(500).json({ error: 'Could not generate preview' });
         res.json(previewData);
@@ -290,7 +320,10 @@ app.get('/api/cover/:rowIndex', async (req, res) => {
         const books = await getAllBooks(SHEET_ID);
         const book = books.find(b => b.rowIndex === rowIndex);
         if (!book) return res.status(404).send(ERR_BOOK_NOT_FOUND);
-        const absolutePath = path.resolve(BOOKS_PATH, book.location);
+        
+        const absolutePath = await getValidatedPath(book.location);
+        if (!absolutePath) return res.status(404).send(`File not found: ${book.location}`);
+        
         const cover = await extractEmbeddedCover(absolutePath);
         if (!cover) return res.status(404).send('No embedded cover found');
         res.set('Content-Type', cover.mimeType);
@@ -306,7 +339,10 @@ app.get('/api/download/:rowIndex', async (req, res) => {
         const books = await getAllBooks(SHEET_ID);
         const book = books.find(b => b.rowIndex === rowIndex);
         if (!book) return res.status(404).send(ERR_BOOK_NOT_FOUND);
-        const absolutePath = path.resolve(BOOKS_PATH, book.location);
+        
+        const absolutePath = await getValidatedPath(book.location);
+        if (!absolutePath) return res.status(404).send(`File not found: ${book.location}`);
+        
         const filename = path.basename(absolutePath);
         const contentType = mime.contentType(path.extname(filename)) || 'application/octet-stream';
         res.setHeader('Content-disposition', 'attachment; filename=' + encodeURIComponent(filename));
