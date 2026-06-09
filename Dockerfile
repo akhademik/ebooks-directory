@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 
 # Cài đặt các thư viện hệ thống cần thiết cho Puppeteer và Chrome
 RUN apt-get update \
@@ -16,6 +16,10 @@ WORKDIR /app
 COPY package*.json ./
 COPY backend/package*.json ./backend/
 
+# Bỏ qua download chromium để tránh lỗi và giảm dung lượng
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 # Cài đặt thư viện Node.js cho backend
 RUN npm install --prefix backend
 
@@ -23,7 +27,6 @@ RUN npm install --prefix backend
 COPY . .
 
 # Ép Puppeteer dùng Chrome của hệ thống (nhẹ và ổn định hơn)
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 # Port ứng dụng
