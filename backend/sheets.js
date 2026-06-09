@@ -47,6 +47,16 @@ async function setupHeaders(spreadsheetId) {
 async function getAllBooks(spreadsheetId) {
     const auth = await getAuthClient();
     try {
+        // First, check the actual size of the sheet to avoid "exceeds grid limits"
+        const meta = await SHEETS.spreadsheets.get({
+            spreadsheetId,
+            auth
+        });
+        const sheet = meta.data.sheets[0];
+        const rowCount = sheet.properties.gridProperties.rowCount;
+
+        if (rowCount <= 1) return []; // Only header or empty
+
         const response = await SHEETS.spreadsheets.values.get({
             spreadsheetId,
             range: 'Sheet1!A2:K',
@@ -68,6 +78,7 @@ async function getAllBooks(spreadsheetId) {
             location: row[10] || ''
         }));
     } catch (error) {
+        if (error.message.includes('exceeds grid limits')) return [];
         console.error('[Sheets Get Error]', error.message);
         return [];
     }

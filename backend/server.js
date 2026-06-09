@@ -97,54 +97,109 @@ async function enrichMetadataWorker(spreadsheetId, sharedBooksCache = null) {
  * PHASE 1: Quick Scan
  */
 async function startQuickScan(dir, existingBooksMap, allBooksArray, foundPathsSet) {
-    try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-            const res = path.resolve(dir, entry.name);
-            if (entry.isDirectory()) {
-                await startQuickScan(res, existingBooksMap, allBooksArray, foundPathsSet);
-            } else {
-                const ext = path.extname(entry.name).toLowerCase();
-                if (SUPPORTED_EXTENSIONS.includes(ext)) {
-                    scanResults.total++;
-                    const fileName = entry.name;
-                    const relativePath = path.relative(BOOKS_PATH, res);
-                    const normalizedPath = relativePath.normalize('NFC');
-                    
-                    foundPathsSet.add(normalizedPath);
+    console.log(`\n*****************************************`);
+    console.log(`🔍 [SCANNER] STARTING AT: ${dir}`);
+    console.log(`*****************************************\n`);
+    
+    const filenameMap = new Map();
+    for (const book of allBooksArray) {
+        const fname = path.basename(book.location || '').normalize('NFC');
+        if (fname) {
+            if (!filenameMap.has(fname)) filenameMap.set(fname, []);
+            filenameMap.get(fname).push(book);
+        }
+    }
 
-                    if (existingBooksMap.has(normalizedPath)) {
-                        const existingBook = existingBooksMap.get(normalizedPath);
+    let filesFoundCount = 0;
+    let foldersScannedCount = 0;
 
-                        // Local fix: If book exists but size is missing, calculate and update it
-                        if (!existingBook.size || existingBook.size === 'N/A' || existingBook.size === '' || existingBook.size === '0.00') {
-                            try {
-                                const stats = await fs.stat(res);
-                                existingBook.size = (stats.size / (1024 * 1024)).toFixed(2);
-                                await addOrUpdateBook(SHEET_ID, existingBook, allBooksArray);
-                                console.log(`[Quick Scan] Fixed missing size for: ${fileName}`);
-                            } catch (err) {
-                                if (err.code !== 'ENOENT') console.error(`[Quick Scan] Size fix error: ${err.message}`);
+    async function scanRecursive(currentDir) {
+        foldersScannedCount++;
+        try {
+            // Try reading with both original and normalized paths if needed
+            let entries = [];
+            try {
+                entries = await fs.readdir(currentDir, { withFileTypes: true });
+            } catch (e) {
+                // If failed, try normalizing to NFC (common fix for network drives on Mac)
+                const normalizedDir = currentDir.normalize('NFC');
+                if (normalizedDir !== currentDir) {
+                    entries = await fs.readdir(normalizedDir, { withFileTypes: true });
+                } else {
+                    throw e;
+                }
+            }
+
+            if (entries.length === 0) {
+                // console.log(`[Scanner] ℹ️ Empty directory: ${currentDir}`);
+            }
+
+            for (const entry of entries) {
+                const res = path.resolve(currentDir, entry.name);
+                if (entry.isDirectory()) {
+                    await scanRecursive(res);
+                } else {
+                    const ext = path.extname(entry.name).toLowerCase();
+                    if (SUPPORTED_EXTENSIONS.includes(ext)) {
+                        filesFoundCount++;
+                        const fileName = entry.name;
+                        const relativePath = path.relative(BOOKS_PATH, res);
+                        const normalizedPath = relativePath.normalize('NFC');
+                        
+                        let bookToUpdate = existingBooksMap.get(normalizedPath);
+
+                        if (!bookToUpdate) {
+                            const fileNameNFC = fileName.normalize('NFC');
+                            const candidates = filenameMap.get(fileNameNFC) || [];
+                            const movedBook = candidates.find(b => !foundPathsSet.has((b.location || '').normalize('NFC')));
+
+                            if (movedBook) {
+                                console.log(`[Scanner] ✨ MOVED: ${fileName}`);
+                                const oldLocationNFC = (movedBook.location || '').normalize('NFC');
+                                movedBook.location = normalizedPath;
+                                existingBooksMap.delete(oldLocationNFC);
+                                existingBooksMap.set(normalizedPath, movedBook);
+                                await addOrUpdateBook(SHEET_ID, movedBook, allBooksArray);
+                                bookToUpdate = movedBook;
                             }
                         }
 
-                        scanResults.skipped++;
-                    } else {
-                        console.log(`[Quick Scan] New: ${fileName}`);
-                        const basicInfo = getBasicInfo(fileName, normalizedPath, res);
-                        await addOrUpdateBook(SHEET_ID, basicInfo, allBooksArray);
-                        const newBook = { ...basicInfo, rowIndex: allBooksArray.length + 2 };
-                        allBooksArray.push(newBook);
-                        existingBooksMap.set(normalizedPath, newBook);
-                        scanResults.added++;
+                        if (bookToUpdate) {
+                            foundPathsSet.add(normalizedPath);
+                            scanResults.skipped++;
+                        } else {
+                            console.log(`[Scanner] 🆕 NEW: ${fileName}`);
+                            const basicInfo = getBasicInfo(fileName, normalizedPath, res);
+                            await addOrUpdateBook(SHEET_ID, basicInfo, allBooksArray);
+                            const newBook = { ...basicInfo, rowIndex: allBooksArray.length + 2 };
+                            allBooksArray.push(newBook);
+                            existingBooksMap.set(normalizedPath, newBook);
+                            foundPathsSet.add(normalizedPath);
+                            scanResults.added++;
+                        }
+                        scanResults.processed++;
                     }
-                    scanResults.processed++;
+                }
+            }
+        } catch (err) {
+            console.error(`[Scanner] ❌ ERROR reading ${currentDir}: ${err.message}`);
+            // IMPORTANT: If we can't read a directory, we MUST add all books from that directory 
+            // to foundPathsSet so they aren't deleted by mistake.
+            const relativeDir = path.relative(BOOKS_PATH, currentDir).normalize('NFC');
+            for (const [path, book] of existingBooksMap.entries()) {
+                if (path.startsWith(relativeDir)) {
+                    foundPathsSet.add(path);
                 }
             }
         }
-    } catch (err) {
-        console.error(`[Quick Scan Error] ${dir}:`, err.message);
     }
+
+    await scanRecursive(dir);
+    console.log(`\n*****************************************`);
+    console.log(`✅ [SCANNER] FINISHED`);
+    console.log(`📂 Folders scanned: ${foldersScannedCount}`);
+    console.log(`📚 Files found: ${filesFoundCount}`);
+    console.log(`*****************************************\n`);
 }
 
 app.get('/api/scan', async (req, res) => {
@@ -164,12 +219,26 @@ app.get('/api/scan', async (req, res) => {
 
             // Phase 1.5: Deletion Sync
             console.log(`\n🗑️ [Engine] Checking for deleted books...`);
+            
+            if (foundPathsSet.size === 0 && existingBooksMap.size > 0) {
+                console.error(`[Engine] 🛑 SAFETY TRIGGERED: No files found in BOOKS_PATH, but sheet has ${existingBooksMap.size} books. Aborting deletion to prevent data loss.`);
+                isScanning = false;
+                return;
+            }
+
             const rowsToDelete = [];
             for (const [normalizedPath, book] of existingBooksMap.entries()) {
                 if (!foundPathsSet.has(normalizedPath)) {
                     console.log(`[Engine] Marking for deletion: ${book.title}`);
                     rowsToDelete.push(book.rowIndex);
                 }
+            }
+
+            // Safety check: Don't delete more than 20% of the library at once unless it's a small library
+            if (rowsToDelete.length > 50 && rowsToDelete.length > (existingBooksMap.size * 0.5)) {
+                console.error(`[Engine] 🛑 SAFETY TRIGGERED: Attempting to delete ${rowsToDelete.length} books (${Math.round(rowsToDelete.length/existingBooksMap.size*100)}% of library). This is likely a path mismatch. Aborting.`);
+                isScanning = false;
+                return;
             }
 
             if (rowsToDelete.length > 0) {
