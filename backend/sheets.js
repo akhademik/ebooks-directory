@@ -124,4 +124,34 @@ async function addOrUpdateBook(spreadsheetId, bookData, existingBooks = null) {
     }
 }
 
-module.exports = { setupHeaders, getAllBooks, addOrUpdateBook };
+async function deleteBooks(spreadsheetId, rowIndices) {
+    if (!rowIndices || rowIndices.length === 0) return;
+    const auth = await getAuthClient();
+    
+    // Sort in descending order to avoid index shifting during deletion
+    const sortedIndices = [...rowIndices].sort((a, b) => b - a);
+    
+    try {
+        const requests = sortedIndices.map(index => ({
+            deleteDimension: {
+                range: {
+                    sheetId: 0, // Assuming Sheet1 has ID 0 (default)
+                    dimension: 'ROWS',
+                    startIndex: index - 1, // 0-based index
+                    endIndex: index // exclusive
+                }
+            }
+        }));
+
+        await SHEETS.spreadsheets.batchUpdate({
+            spreadsheetId,
+            resource: { requests },
+            auth
+        });
+        console.log(`[Sheets] Deleted ${rowIndices.length} books.`);
+    } catch (error) {
+        console.error('[Sheets Delete Error]', error.message);
+    }
+}
+
+module.exports = { setupHeaders, getAllBooks, addOrUpdateBook, deleteBooks };

@@ -58,14 +58,30 @@ function resetAndRender() {
     renderBooks(getFilteredBooks());
 }
 
+function removeAccents(str) {
+    return (str || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[đĐ]/g, char => char === 'đ' ? 'd' : 'D')
+        .toLowerCase();
+}
+
 function getFilteredBooks() {
-    const query = ELEMENTS.searchInput().value.toLowerCase();
+    const rawQuery = removeAccents(ELEMENTS.searchInput().value);
+    // Split the query into individual search terms, filtering out empty spaces
+    const queryTerms = rawQuery.split(' ').filter(term => term.trim() !== '');
     const type = ELEMENTS.typeFilter().value;
 
     return allBooks.filter(book => {
-        const matchesSearch = (book.title || '').toLowerCase().includes(query) || 
-                              (book.author || '').toLowerCase().includes(query);
+        const titleClean = removeAccents(book.title);
+        const authorClean = removeAccents(book.author);
+        const combinedText = `${titleClean} ${authorClean}`;
+
+        // Check if EVERY term in the search query exists SOMEWHERE in the combined title/author text
+        const matchesSearch = queryTerms.every(term => combinedText.includes(term));
+        
         const matchesType = !type || (book.location || '').toLowerCase().endsWith(type);
+        
         return matchesSearch && matchesType;
     });
 }

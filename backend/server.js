@@ -5,7 +5,7 @@ const mime = require('mime-types');
 require('dotenv').config();
 
 const { getBookMetadata, getBasicInfo } = require('./scanner');
-const { setupHeaders, getAllBooks, addOrUpdateBook } = require('./sheets');
+const { setupHeaders, getAllBooks, addOrUpdateBook, deleteBooks } = require('./sheets');
 const { getPreview } = require('./utils/preview');
 const { extractEmbeddedCover } = require('./utils/cover');
 
@@ -24,7 +24,7 @@ const SUPPORTED_EXTENSIONS = ['.pdf', '.epub', '.mobi', '.azw', '.azw3'];
 
 let isScanning = false;
 let isEnriching = false;
-let scanResults = { total: 0, processed: 0, added: 0, skipped: 0, errors: 0 };
+let scanResults = { total: 0, processed: 0, added: 0, skipped: 0, deleted: 0, errors: 0 };
 let enrichResults = { total: 0, current: 0, currentTitle: '' };
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -96,13 +96,13 @@ async function enrichMetadataWorker(spreadsheetId, sharedBooksCache = null) {
 /**
  * PHASE 1: Quick Scan
  */
-async function startQuickScan(dir, existingBooksMap, allBooksArray) {
+async function startQuickScan(dir, existingBooksMap, allBooksArray, foundPathsSet) {
     try {
         const entries = await fs.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
             const res = path.resolve(dir, entry.name);
             if (entry.isDirectory()) {
-                await startQuickScan(res, existingBooksMap, allBooksArray);
+                await startQuickScan(res, existingBooksMap, allBooksArray, foundPathsSet);
             } else {
                 const ext = path.extname(entry.name).toLowerCase();
                 if (SUPPORTED_EXTENSIONS.includes(ext)) {
@@ -110,6 +110,8 @@ async function startQuickScan(dir, existingBooksMap, allBooksArray) {
                     const fileName = entry.name;
                     const relativePath = path.relative(BOOKS_PATH, res);
                     const normalizedPath = relativePath.normalize('NFC');
+                    
+                    foundPathsSet.add(normalizedPath);
 
                     if (existingBooksMap.has(normalizedPath)) {
                         const existingBook = existingBooksMap.get(normalizedPath);
@@ -148,7 +150,7 @@ async function startQuickScan(dir, existingBooksMap, allBooksArray) {
 app.get('/api/scan', async (req, res) => {
     if (isScanning) return res.json({ message: 'Scan already in progress', results: scanResults });
     isScanning = true;
-    scanResults = { total: 0, processed: 0, added: 0, skipped: 0, errors: 0 };
+    scanResults = { total: 0, processed: 0, added: 0, skipped: 0, deleted: 0, errors: 0 };
     (async () => {
         try {
             console.log(`\n🚀 [Engine] Starting...`);
@@ -156,7 +158,26 @@ app.get('/api/scan', async (req, res) => {
             const books = await getAllBooks(SHEET_ID);
             const existingBooksMap = new Map(books.map(b => [(b.location || '').normalize('NFC'), b]));
             enrichMetadataWorker(SHEET_ID, books).catch(err => console.error('[Enricher Startup Error]', err.message));
-            await startQuickScan(BOOKS_PATH, existingBooksMap, books);
+            
+            const foundPathsSet = new Set();
+            await startQuickScan(BOOKS_PATH, existingBooksMap, books, foundPathsSet);
+
+            // Phase 1.5: Deletion Sync
+            console.log(`\n🗑️ [Engine] Checking for deleted books...`);
+            const rowsToDelete = [];
+            for (const [normalizedPath, book] of existingBooksMap.entries()) {
+                if (!foundPathsSet.has(normalizedPath)) {
+                    console.log(`[Engine] Marking for deletion: ${book.title}`);
+                    rowsToDelete.push(book.rowIndex);
+                }
+            }
+
+            if (rowsToDelete.length > 0) {
+                await deleteBooks(SHEET_ID, rowsToDelete);
+                scanResults.deleted = rowsToDelete.length;
+                console.log(`[Engine] Successfully deleted ${rowsToDelete.length} missing books from Sheets.`);
+            }
+
         } catch (err) {
             console.error('[Scan Error]', err.message);
         } finally {
