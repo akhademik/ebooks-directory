@@ -29,6 +29,14 @@
             </div>
 
             <div class="flex gap-2">
+                <div class="flex bg-slate-800 p-1 rounded-lg mr-2 border border-slate-700">
+                    <button id="gridBtn" class="p-2 rounded-md transition-all text-indigo-400 bg-slate-700 shadow-sm" title="Grid View">
+                        <i class="fas fa-th-large"></i>
+                    </button>
+                    <button id="listBtn" class="p-2 rounded-md transition-all text-slate-400 hover:text-slate-200" title="List View">
+                        <i class="fas fa-list"></i>
+                    </button>
+                </div>
                 <button id="scanBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 shadow-lg shadow-indigo-900/20">
                     <i class="fas fa-sync-alt" id="scanIcon"></i>
                     <span>Scan Library</span>
@@ -72,6 +80,22 @@
             <p class="text-sm">Try scanning your library or adjust your search.</p>
         </div>
     </main>
+
+    <!-- Preview Modal -->
+    <div id="previewModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/90 backdrop-blur-sm" id="modalOverlay"></div>
+        <div class="bg-slate-900 w-full max-w-5xl h-[90vh] rounded-2xl relative z-10 flex flex-col overflow-hidden border border-slate-800 shadow-2xl">
+            <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
+                <h2 id="previewTitle" class="text-lg font-bold text-white truncate pr-4">Book Preview</h2>
+                <button id="closeModal" class="text-slate-400 hover:text-white transition-colors p-2">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+            <div id="previewContent" class="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-950">
+                <!-- Content will be injected here -->
+            </div>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>

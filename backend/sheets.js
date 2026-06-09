@@ -20,12 +20,12 @@ const SHEETS = google.sheets('v4');
 
 async function setupHeaders(spreadsheetId) {
     const auth = await getAuthClient();
-    const headers = ['File Name', 'Title', 'Author', 'Year', 'Rating', 'Cover URL', 'Source', 'Status'];
+    const headers = ['Goodreads Check', 'Goodreads ID', 'Title', 'Author', 'Year', 'Rating', 'Cover URL', 'Source', 'Status', 'Location'];
     
     try {
         const response = await SHEETS.spreadsheets.values.get({
             spreadsheetId,
-            range: 'Sheet1!A1:H1',
+            range: 'Sheet1!A1:J1',
             auth
         });
 
@@ -49,20 +49,22 @@ async function getAllBooks(spreadsheetId) {
     try {
         const response = await SHEETS.spreadsheets.values.get({
             spreadsheetId,
-            range: 'Sheet1!A2:H',
+            range: 'Sheet1!A2:J',
             auth
         });
         const rows = response.data.values || [];
         return rows.map((row, index) => ({
             rowIndex: index + 2,
-            fileName: row[0],
-            title: row[1],
-            author: row[2],
-            year: row[3],
-            rating: row[4],
-            cover: row[5],
-            source: row[6],
-            status: row[7] || 'auto'
+            goodreadsCheck: row[0] || 'No',
+            goodreadsId: row[1] || '',
+            title: row[2],
+            author: row[3],
+            year: row[4],
+            rating: row[5],
+            cover: row[6],
+            source: row[7],
+            status: row[8] || 'auto',
+            location: row[9] || ''
         }));
     } catch (error) {
         console.error('[Sheets Get Error]', error.message);
@@ -74,34 +76,37 @@ async function addOrUpdateBook(spreadsheetId, bookData) {
     const auth = await getAuthClient();
     const existingBooks = await getAllBooks(spreadsheetId);
     
-    const existingIndex = existingBooks.findIndex(b => b.fileName === bookData.fileName);
+    // Use location as unique identifier since fileName is removed from sheet
+    const existingIndex = existingBooks.findIndex(b => b.location === bookData.location);
     
     const rowValues = [
-        bookData.fileName,
+        bookData.goodreadsCheck || 'No',
+        bookData.goodreadsId || '',
         bookData.title,
         bookData.author,
         bookData.year,
         bookData.rating,
         bookData.cover,
         bookData.source,
-        bookData.status || 'auto'
+        bookData.status || 'auto',
+        bookData.location || ''
     ];
 
     if (existingIndex !== -1) {
         const existingBook = existingBooks[existingIndex];
         if (existingBook.status === 'manual') {
-            console.log(`[Sheets] Skipping update for "${bookData.fileName}" (Manual status)`);
+            console.log(`[Sheets] Skipping update for "${bookData.title}" (Manual status)`);
             return;
         }
 
         await SHEETS.spreadsheets.values.update({
             spreadsheetId,
-            range: `Sheet1!A${existingBook.rowIndex}:H${existingBook.rowIndex}`,
+            range: `Sheet1!A${existingBook.rowIndex}:J${existingBook.rowIndex}`,
             valueInputOption: 'RAW',
             resource: { values: [rowValues] },
             auth
         });
-        console.log(`[Sheets] Updated: ${bookData.fileName}`);
+        console.log(`[Sheets] Updated: ${bookData.title}`);
     } else {
         await SHEETS.spreadsheets.values.append({
             spreadsheetId,
@@ -110,7 +115,7 @@ async function addOrUpdateBook(spreadsheetId, bookData) {
             resource: { values: [rowValues] },
             auth
         });
-        console.log(`[Sheets] Added: ${bookData.fileName}`);
+        console.log(`[Sheets] Added: ${bookData.title}`);
     }
 }
 

@@ -13,24 +13,28 @@ const mockSpreadsheetId = process.env.GOOGLE_SHEET_ID || 'dummy-id';
 
 const testBooks = [
     {
-        fileName: "Test Book 1.pdf",
+        openLibraryCheck: "Yes",
+        goodreadsId: "4671",
         title: "Test Book 1",
         author: "Author A",
         year: "2020",
         rating: "4.5",
         cover: "http://example.com/cover1.jpg",
         source: "Open Library",
-        status: "auto"
+        status: "auto",
+        location: "books/Test Book 1.pdf"
     },
     {
-        fileName: "Manual Book.epub",
+        openLibraryCheck: "No",
+        goodreadsId: "",
         title: "Manual Title",
         author: "Manual Author",
         year: "2021",
         rating: "5.0",
         cover: "http://example.com/cover2.jpg",
         source: "Manual",
-        status: "manual"
+        status: "manual",
+        location: "books/Manual Book.epub"
     }
 ];
 
@@ -53,11 +57,13 @@ async function runTest() {
         console.log("\n2. Testing 'manual' protection (simulated)...");
         // We try to update the 'Manual Book.epub' with new data
         const updateData = {
-            fileName: "Manual Book.epub",
+            openLibraryCheck: "Yes",
+            goodreadsId: "123",
             title: "OVERWRITTEN TITLE",
             author: "SHOULD NOT CHANGE",
             year: "9999",
-            status: "auto" // Even if we pass 'auto', it should check existing row status
+            status: "auto", // Even if we pass 'auto', it should check existing row status
+            location: "books/Manual Book.epub"
         };
         await addOrUpdateBook(mockSpreadsheetId, updateData);
         

@@ -8,10 +8,13 @@
     "test:scanner": "node tests/test_scanner.js"
   },
   "dependencies": {
-    "axios": "^1.17.0",
-    "cheerio": "^1.2.0",
     "dotenv": "^16.6.1",
+    "epub2": "^3.0.2",
     "express": "^4.22.2",
-    "googleapis": "^173.0.0"
+    "googleapis": "^173.0.0",
+    "pdf-to-img": "^6.1.0",
+    "puppeteer": "^25.1.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }

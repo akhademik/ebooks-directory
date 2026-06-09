@@ -1,4 +1,6 @@
 const { getBookMetadata } = require('../backend/scanner');
+const path = require('path');
+const fs = require('fs');
 
 const testFiles = [
     "The Great Gatsby - F. Scott Fitzgerald.pdf",
@@ -8,13 +10,17 @@ const testFiles = [
     "NonExistentBook12345ThatWillFailAPI.pdf"
 ];
 
+const DUMMY_COVERS = path.join(__dirname, 'dummy_covers');
+if (!fs.existsSync(DUMMY_COVERS)) fs.mkdirSync(DUMMY_COVERS);
+
 async function runTests() {
     console.log("=== STARTING SCANNER TESTS ===\n");
     
     for (const filename of testFiles) {
         console.log(`Testing file: "${filename}"`);
         try {
-            const metadata = await getBookMetadata(filename);
+            // Mocking absolute path as the filename itself for testing purposes
+            const metadata = await getBookMetadata(filename, filename, filename, DUMMY_COVERS);
             console.log("Result:", JSON.stringify(metadata, null, 2));
             console.log("------------------------------\n");
         } catch (err) {

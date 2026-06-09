@@ -1,21 +1,6 @@
-const axios = require('axios');
 const path = require('path');
-const cheerio = require('cheerio');
-
-/**
- * Normalizes a string: removes Vietnamese accents and special characters.
- * Useful for cleaner API searching.
- */
-function normalizeString(str) {
-    if (!str) return '';
-    return str.normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/đ/g, "d").replace(/Đ/g, "D")
-              .replace(/[^\x20-\x7E]/g, "") // Remove non-printable and non-ASCII characters
-              .replace(/[^a-zA-Z0-9\s]/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-}
+const { extractEmbeddedCover } = require('./utils/cover');
+const { scrapeGoodreads } = require('./utils/scraper');
 
 /**
  * Parses a filename to extract title and author.
@@ -35,211 +20,65 @@ function parseFilename(filename) {
     name = name.replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
 
     let title = name;
-    let author = '';
+    let author = 'Unknown';
 
     // 4. Handle "Title - Author" or "Author - Title"
     if (name.includes(' - ')) {
         const parts = name.split(' - ');
-        // Heuristic: usually the API search will help clarify, 
-        // but for now we store them as parts[0] and parts[1]
         title = parts[0].trim();
         author = parts[1].trim();
     }
 
     return { 
-        raw: name, 
         title, 
-        author, 
-        normalizedTitle: normalizeString(title),
-        normalizedAuthor: normalizeString(author),
+        author,
         extension: ext 
     };
 }
 
-async function fetchFromOpenLibrary(title, author = '', normalizedTitle = '') {
-    try {
-        const searchTitle = normalizedTitle || normalizeString(title);
-        const searchAuthor = author ? normalizeString(author) : '';
-        const query = searchAuthor ? `title=${encodeURIComponent(searchTitle)}&author=${encodeURIComponent(searchAuthor)}` : `title=${encodeURIComponent(searchTitle)}`;
-        const url = `https://openlibrary.org/search.json?${query}`;
-        
-        console.log(`[OpenLibrary] Searching: ${url}`);
-        const response = await axios.get(url, { timeout: 7000 });
-        const docs = response.data.docs;
-
-        if (docs && docs.length > 0) {
-            return formatOLResult(docs[0]);
-        }
-    } catch (error) {
-        console.error(`[OpenLibrary Error] ${error.message}`);
-    }
-    return null;
-}
-
-function formatOLResult(first) {
-    return {
-        title: first.title,
-        author: first.author_name ? first.author_name[0] : 'Unknown',
-        year: first.first_publish_year || 'N/A',
-        cover: first.cover_i ? `https://covers.openlibrary.org/b/id/${first.cover_i}-L.jpg` : null,
-        rating: first.ratings_average ? first.ratings_average.toFixed(1) : 'N/A',
-        source: 'Open Library'
-    };
-}
-
-async function fetchFromGoogleBooks(title, author = '', normalizedTitle = '') {
-    const searchTitle = normalizedTitle || normalizeString(title);
-    const searchAuthor = author ? normalizeString(author) : '';
-    const apiKey = process.env.GOOGLE_BOOKS_API_KEY;
-    
-    const queryStr = `intitle:${searchTitle}+inauthor:${searchAuthor}`;
-    let url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}&maxResults=1`;
-    if (apiKey) url += `&key=${apiKey}`;
-
-    const makeRequest = async () => {
-        console.log(`[GoogleBooks] Searching: ${url.replace(apiKey, 'REDACTED')}`);
-        return await axios.get(url, { 
-            timeout: 10000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        });
-    };
-
-    try {
-        const response = await makeRequest();
-        if (response.data.items && response.data.items.length > 0) {
-            return formatGBResult(response.data.items[0]);
-        }
-    } catch (error) {
-        if (error.response && error.response.status === 429) {
-            console.log(`[GoogleBooks] Rate limited (429). Sleeping 15s before retry...`);
-            await new Promise(res => setTimeout(res, 15000));
-            try {
-                const retryResponse = await makeRequest();
-                if (retryResponse.data.items && retryResponse.data.items.length > 0) {
-                    return formatGBResult(retryResponse.data.items[0]);
-                }
-            } catch (retryError) {
-                console.error(`[GoogleBooks Retry Error] ${retryError.message}`);
-            }
-        } else {
-            console.error(`[GoogleBooks Error] ${error.message}`);
-        }
-    }
-    return null;
-}
-
-function formatGBResult(item) {
-    const volumeInfo = item.volumeInfo;
-    return {
-        title: volumeInfo.title,
-        author: volumeInfo.authors ? volumeInfo.authors[0] : 'Unknown',
-        year: volumeInfo.publishedDate ? volumeInfo.publishedDate.split('-')[0] : 'N/A',
-        cover: volumeInfo.imageLinks ? volumeInfo.imageLinks.thumbnail.replace('http:', 'https:') : null,
-        rating: volumeInfo.averageRating || 'N/A',
-        source: 'Google Books'
-    };
-}
-
-async function fetchFromGoodreads(title, author = '', normalizedTitle = '') {
-    try {
-        const searchTitle = normalizedTitle || normalizeString(title);
-        const searchAuthor = author ? normalizeString(author) : '';
-        const query = searchAuthor ? `${searchTitle} ${searchAuthor}` : searchTitle;
-        const url = `https://www.goodreads.com/search?q=${encodeURIComponent(query)}`;
-        
-        console.log(`[Goodreads] Scraping: ${url}`);
-        
-        const response = await axios.get(url, {
-            timeout: 15000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache'
-            }
-        });
-
-        if (response.data.includes('Robot Check') || response.data.includes('api-services-support@goodreads.com')) {
-            console.warn(`[Goodreads] Access blocked by Robot Check.`);
-            return null;
-        }
-
-        const $ = cheerio.load(response.data);
-        // Goodreads search results are in a table with class 'tableList'
-        const firstResult = $('table.tableList tr[itemscope][itemtype="http://schema.org/Book"]').first();
-
-        if (firstResult.length > 0) {
-            // Precise selectors based on the HTML structure
-            const bookTitle = firstResult.find('a.bookTitle span[itemprop="name"]').text().trim();
-            const bookAuthor = firstResult.find('a.authorName span[itemprop="name"]').first().text().trim();
-            
-            // Container for rating and year
-            const infoContainer = firstResult.find('span.minirating').parent();
-            const infoText = infoContainer.text().trim();
-            
-            // Extract cover and get large version
-            let coverImg = firstResult.find('img.bookCover').attr('src');
-            if (coverImg) {
-                // Remove Goodreads thumbnail suffixes to get original image
-                // Examples: ._SX50_.jpg, ._SY75_.jpg, ._SX50_SY75_.jpg
-                coverImg = coverImg.split('._S')[0] + '.jpg';
-            }
-
-            // Parse rating (e.g., "3.81 avg rating")
-            // eslint-disable-next-line sonarjs/slow-regex
-            const ratingMatch = infoText.match(/(\d+\.\d+) avg rating/);
-            const rating = ratingMatch ? ratingMatch[1] : 'N/A';
-
-            // Extract year (e.g., "published 1998" or "— 1998 —")
-            const yearMatch = infoText.match(/published (\d{4})/i) || infoText.match(/— (\d{4}) —/);
-            const year = yearMatch ? yearMatch[1] : 'N/A';
-
-            console.log(`[Goodreads] Found: ${bookTitle} by ${bookAuthor} (${rating}⭐, ${year})`);
-
-            return {
-                title: bookTitle,
-                author: bookAuthor,
-                year: year,
-                cover: coverImg,
-                rating: rating,
-                source: 'Goodreads'
-            };
-        }
-    } catch (error) {
-        console.error(`[Goodreads Error] ${error.message}`);
-    }
-    return null;
-}
-
-async function getBookMetadata(filename) {
+/**
+ * Fetches metadata from Goodreads using a scraper.
+ * Prioritizes embedded cover extraction.
+ */
+async function getBookMetadata(filename, relativePath, absolutePath, coversDir, goodreadsId = '') {
     const parsed = parseFilename(filename);
     
-    // 1. Try Goodreads first as requested
-    let metadata = await fetchFromGoodreads(parsed.title, parsed.author, parsed.normalizedTitle);
-    
-    // 2. Fallback to Open Library
-    if (!metadata) {
-        metadata = await fetchFromOpenLibrary(parsed.title, parsed.author, parsed.normalizedTitle);
-    }
-    
-    // 3. Fallback to Google Books
-    if (!metadata) {
-        metadata = await fetchFromGoogleBooks(parsed.title, parsed.author, parsed.normalizedTitle);
-    }
+    // 1. Try to extract embedded cover first
+    const embeddedCover = await extractEmbeddedCover(absolutePath, coversDir);
 
-    // If still no metadata, return basic info from filename
-    if (!metadata) {
-        return {
-            title: parsed.title,
-            author: parsed.author || 'Unknown',
-            year: 'N/A',
-            cover: null,
-            rating: 'N/A',
-            source: 'Filename Parser'
-        };
+    let metadata = {
+        title: parsed.title,
+        author: parsed.author,
+        year: 'N/A',
+        cover: embeddedCover,
+        rating: 'N/A',
+        source: 'Filename Parser',
+        extension: parsed.extension,
+        location: relativePath,
+        goodreadsCheck: 'Yes',
+        goodreadsId: goodreadsId
+    };
+
+    // 2. Lookup on Goodreads
+    // If goodreadsId is provided, we use it directly in the scraper
+    const searchQuery = `${parsed.title} ${parsed.author !== 'Unknown' ? parsed.author : ''}`.trim();
+    const result = await scrapeGoodreads(searchQuery, goodreadsId);
+
+    if (result) {
+        console.log(`[Scanner] Found match on Goodreads: ${result.title}`);
+        metadata.title = result.title;
+        metadata.author = result.author || parsed.author;
+        metadata.year = result.year || 'N/A';
+        metadata.rating = result.rating || 'N/A';
+        metadata.source = 'Goodreads';
+        metadata.goodreadsId = result.goodreadsId || goodreadsId;
+        
+        // Only use Goodreads cover if we didn't find an embedded one
+        if (!metadata.cover && result.cover) {
+            metadata.cover = result.cover;
+        }
+    } else {
+        console.log(`[Scanner] No match found on Goodreads for: ${filename}`);
     }
 
     return metadata;

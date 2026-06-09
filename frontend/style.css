@@ -46,3 +46,90 @@
 .book-card:hover .cover-img {
     transform: scale(1.05);
 }
+
+/* Detail (List) View Styles */
+#bookGrid.list-view {
+    grid-template-cols: 1fr;
+    gap: 0.75rem;
+}
+
+.list-view .book-card {
+    flex-direction: row;
+    height: 80px;
+    align-items: center;
+    padding-right: 1.5rem;
+}
+
+.list-view .cover-container {
+    width: 54px;
+    height: 100%;
+    aspect-ratio: auto;
+    flex-shrink: 0;
+}
+
+.list-view .p-3 {
+    padding: 0 1.5rem;
+    flex-direction: row;
+    align-items: center;
+    gap: 1.5rem;
+    flex: 1;
+    display: flex;
+}
+
+.list-view h3 {
+    width: 35%;
+    margin-bottom: 0;
+    -webkit-line-clamp: 1;
+    font-size: 0.95rem;
+}
+
+.list-view .author-text {
+    width: 25%;
+    margin-bottom: 0;
+    font-size: 0.85rem;
+}
+
+.list-view .meta-text {
+    width: 40%;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 3rem;
+    font-size: 0.85rem;
+}
+
+.list-view .meta-text > span:first-child {
+    min-width: 60px;
+}
+
+.list-view .meta-text > span:last-child {
+    min-width: 80px;
+    text-align: right;
+}
+
+.list-view .format-badge {
+    position: static;
+    margin-left: 1rem;
+    flex-shrink: 0;
+}
+
+/* Format Badges */
+.format-badge {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    z-index: 5;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.badge-pdf { background: #ef4444; color: white; }
+.badge-epub { background: #10b981; color: white; }
+.badge-mobi { background: #f59e0b; color: white; }
+.badge-azw3 { background: #6366f1; color: white; }
+.badge-default { background: #64748b; color: white; }
