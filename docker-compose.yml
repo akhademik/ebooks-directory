@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  ebook-manager:
+    build: .
+    container_name: ebook-manager
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      # NAS_PATH se duoc truyen tu giao dien Portainer
+      - ${NAS_PATH}:/books
+    environment:
+      - BOOKS_PATH=/books
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+      - GOOGLE_SERVICE_ACCOUNT_EMAIL=${GOOGLE_SERVICE_ACCOUNT_EMAIL}
+      - GOOGLE_PRIVATE_KEY=${GOOGLE_PRIVATE_KEY}
