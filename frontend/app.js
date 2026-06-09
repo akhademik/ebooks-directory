@@ -105,35 +105,56 @@ async function startScan() {
     scanIcon.classList.add(UI_CLASSES.spinning);
     statusArea.classList.remove(UI_CLASSES.hidden);
     
-    // Polling fetch to show books as they appear in Sheets
-    const pollInterval = setInterval(fetchBooks, 5000);
+    let lastProcessed = -1;
 
+    // Start scanning
     try {
-        const response = await fetch('/api/scan');
-        const data = await response.json();
-        
-        clearInterval(pollInterval);
-        await fetchBooks(); // Final fetch
-
-        statusText.innerText = `Scan Complete! Added/Updated: ${data.results.added}.`;
-        scanProgress.innerText = `${data.results.total}/${data.results.total}`;
-        progressBar.style.width = '100%';
-        
-        setTimeout(() => {
-            statusArea.classList.add(UI_CLASSES.hidden);
-            scanBtn.disabled = false;
-            scanBtn.classList.remove(UI_CLASSES.disabled, UI_CLASSES.noCursor);
-            scanIcon.classList.remove(UI_CLASSES.spinning);
-        }, 5000);
-
+        await fetch('/api/scan');
     } catch (error) {
-        clearInterval(pollInterval);
-        console.error('Scan failed:', error);
-        statusText.innerText = "Error during scan.";
-        scanBtn.disabled = false;
-        scanBtn.classList.remove(UI_CLASSES.disabled, UI_CLASSES.noCursor);
-        scanIcon.classList.remove(UI_CLASSES.spinning);
+        console.error('Failed to trigger scan:', error);
+        showError('Could not start scan.');
+        return;
     }
+
+    // Polling status
+    const pollStatus = setInterval(async () => {
+        try {
+            const response = await fetch('/api/scan/status');
+            const data = await response.json();
+            const { isScanning, results } = data;
+
+            // Update Progress Bar
+            if (results.total > 0) {
+                const percent = Math.round((results.processed / results.total) * 100);
+                progressBar.style.width = `${percent}%`;
+                scanProgress.innerText = `${results.processed}/${results.total}`;
+                statusText.innerText = `Scanning: ${results.processed} of ${results.total} books...`;
+            } else {
+                statusText.innerText = "Finding books on NAS...";
+            }
+
+            // Only fetch books if something was actually added to Sheets
+            if (results.added > lastProcessed) {
+                lastProcessed = results.added;
+                fetchBooks();
+            }
+
+            if (!isScanning) {
+                clearInterval(pollStatus);
+                statusText.innerText = `Scan Complete! Total: ${results.total}, New: ${results.added}, Skipped: ${results.skipped}.`;
+                progressBar.style.width = '100%';
+                
+                setTimeout(() => {
+                    statusArea.classList.add(UI_CLASSES.hidden);
+                    scanBtn.disabled = false;
+                    scanBtn.classList.remove(UI_CLASSES.disabled, UI_CLASSES.noCursor);
+                    scanIcon.classList.remove(UI_CLASSES.spinning);
+                }, 5000);
+            }
+        } catch (error) {
+            console.error('Polling error:', error);
+        }
+    }, 1500);
 }
 
 function showError(msg) {

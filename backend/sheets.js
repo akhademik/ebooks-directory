@@ -1,28 +1,18 @@
 const { google } = require('googleapis');
-const fs = require('fs');
-const path = require('path');
 require('dotenv').config();
 
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 
 async function getAuthClient() {
-    // Ưu tiên dùng file JSON vì nó ổn định hơn .env
-    const jsonPath = path.join(__dirname, '../gen-lang-client-0554245806-18194cdbd937.json');
-    
-    if (fs.existsSync(jsonPath)) {
-        const credentials = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-        const auth = google.auth.fromJSON(credentials);
-        auth.scopes = SCOPES;
-        return auth;
+    if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+        throw new Error('Missing Google Service Account credentials in .env');
     }
 
-    // Fallback sang .env nếu không có file JSON
-    const auth = new google.auth.JWT(
-        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        null,
-        process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '') : undefined,
-        SCOPES
-    );
+    const auth = new google.auth.JWT({
+        email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, ''),
+        scopes: SCOPES
+    });
     return auth;
 }
 
