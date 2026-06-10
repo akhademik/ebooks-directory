@@ -37,7 +37,12 @@ const EL = {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   fetchBooks();
-  startScan();
+  
+  // By default, start a normal scan on load. 
+  // If one is already running, startScan will just resume polling.
+  startScan(false);
+
+  EL.scanBtn().addEventListener("click", () => startScan(true));
 
   EL.searchInput().addEventListener("input", resetAndRender);
   EL.typeFilter().addEventListener("change", () => {
@@ -406,7 +411,19 @@ async function showPreview(book) {
 }
 
 // ─── Scan ─────────────────────────────────────────────────────────────────────
-async function startScan() {
+async function checkScanStatus() {
+  try {
+    const res = await fetch("/api/scan/status");
+    const data = await res.json();
+    if (data.isScanning || data.isEnriching) {
+      startScan(false, true); // Resume polling without triggering a new scan
+    }
+  } catch (err) {
+    console.error("Error checking scan status:", err);
+  }
+}
+
+async function startScan(force = false, isResuming = false) {
   const scanBtn = EL.scanBtn();
   const scanIcon = EL.scanIcon();
   const statusArea = EL.statusArea();
@@ -414,21 +431,34 @@ async function startScan() {
   const scanProgress = EL.scanProgress();
   const progressBar = EL.progressBar();
 
-  scanBtn.disabled = true;
-  scanBtn.classList.add("opacity-50", "cursor-not-allowed");
+  // Button remains enabled so user can click Force Scan anytime
   scanIcon.classList.add("spinning");
   statusArea.classList.remove("hidden");
 
   let lastProcessed = -1;
+  let pollInterval = null;
 
-  try {
-    await fetch("/api/scan");
-  } catch (err) {
-    console.error("Scan start error:", err);
-    return;
+  if (!isResuming) {
+    try {
+      const res = await fetch(`/api/scan?force=${force}`);
+      const initialData = await res.json();
+      
+      // If a scan was already running and we didn't force, 
+      // just ensure we are polling.
+      if (initialData.message === "Scan already in progress" && !force) {
+        // Already polling or will be handled by checkScanStatus logic
+      }
+    } catch (err) {
+      console.error("Scan start error:", err);
+      scanIcon.classList.remove("spinning");
+      return;
+    }
   }
 
-  const poll = setInterval(async () => {
+  // Clear any existing poll to avoid duplicates
+  if (window._scanPoll) clearInterval(window._scanPoll);
+
+  window._scanPoll = setInterval(async () => {
     try {
       const res = await fetch("/api/scan/status");
       const data = await res.json();
@@ -456,13 +486,14 @@ async function startScan() {
       }
 
       if (!isScanning && !isEnriching) {
-        clearInterval(poll);
+        clearInterval(window._scanPoll);
+        window._scanPoll = null;
         statusText.textContent = "Library sync complete";
         progressBar.style.width = "100%";
         fetchBooks();
-        setTimeout(() => statusArea.classList.add("hidden"), 3000);
-        scanBtn.disabled = false;
-        scanBtn.classList.remove("opacity-50", "cursor-not-allowed");
+        setTimeout(() => {
+          if (!window._scanPoll) statusArea.classList.add("hidden");
+        }, 3000);
         scanIcon.classList.remove("spinning");
       }
     } catch (err) {

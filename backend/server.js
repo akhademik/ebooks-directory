@@ -22,13 +22,13 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
 const ERR_BOOK_NOT_FOUND = "Book not found";
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "../frontend")));
-
-const SUPPORTED_EXTENSIONS = [".pdf", ".epub", ".mobi", ".azw", ".azw3"];
-
+// ─── Cache & State ────────────────────────────────────────────────────────────
+let cachedBooks = [];
 let isScanning = false;
 let isEnriching = false;
+let enrichingScanId = -1; // Track which scanId is currently enriching
+let currentScanId = 0; 
+
 let scanResults = {
   total: 0,
   processed: 0,
@@ -39,46 +39,68 @@ let scanResults = {
 };
 let enrichResults = { total: 0, current: 0, currentTitle: "" };
 
+/**
+ * Helper to get books with cache
+ */
+async function getBooksCached(forceRefresh = false) {
+  if (cachedBooks.length === 0 || forceRefresh) {
+    console.log(`[Cache] 🔄 Fetching from Google Sheets...`);
+    cachedBooks = await getAllBooks(SHEET_ID);
+    console.log(`[Cache] ✅ Loaded ${cachedBooks.length} books.`);
+  }
+  return cachedBooks;
+}
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "../frontend")));
+
+const SUPPORTED_EXTENSIONS = [".pdf", ".epub", ".mobi", ".azw", ".azw3"];
+
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 /**
  * Background worker to enrich metadata
  */
-async function enrichMetadataWorker(spreadsheetId, sharedBooksCache = null) {
-  if (isEnriching) return;
+async function enrichMetadataWorker(spreadsheetId, scanId) {
+  // If this specific scan session is already being enriched, don't start it again
+  if (enrichingScanId === scanId) return;
+  
+  enrichingScanId = scanId;
   isEnriching = true;
+  
   try {
-    console.log(`\n🧵 [Enricher] Active.`);
-    const books = sharedBooksCache || (await getAllBooks(spreadsheetId));
+    console.log(`\n🧵 [Enricher #${scanId}] Starting enrichment phase...`);
+    // Ensure we use the latest books from cache
+    const books = await getBooksCached();
+    
     const needsEnrichment = (b) =>
       b.goodreadsCheck?.toLowerCase() === "no" ||
       (b.goodreadsId && b.source === "Filename Parser");
 
-    while (isScanning || books.some(needsEnrichment)) {
+    while (scanId === currentScanId) {
       const pending = books.filter(needsEnrichment);
       enrichResults.total = pending.length;
+      
       if (pending.length === 0) {
         if (!isScanning) break;
         await delay(3000);
         continue;
       }
+      
       const book = pending[0];
       enrichResults.current++;
       enrichResults.currentTitle = book.title;
+      console.log(`[Enricher #${scanId}] Processing: ${book.title}`);
+
       try {
         await delay(5000);
+        if (scanId !== currentScanId) break;
 
-        // Ensure size is calculated if it was missed
-        if (!book.size || book.size === "N/A" || book.size === "") {
-          try {
-            const absolutePath = path.resolve(BOOKS_PATH, book.location);
-            const stats = await fs.stat(absolutePath);
-            book.size = (stats.size / (1024 * 1024)).toFixed(2);
-          } catch (err) {
-            if (err.code !== "ENOENT")
-              console.error(`[Enricher] Size fix error: ${err.message}`);
-            book.size = "0.00";
-          }
+        const absolutePath = await getValidatedPath(book.location);
+        if (!absolutePath) {
+           console.warn(`[Enricher #${scanId}] File missing, skipping: ${book.location}`);
+           book.goodreadsCheck = "Error";
+           continue;
         }
 
         const metadata = await getBookMetadata(
@@ -89,30 +111,36 @@ async function enrichMetadataWorker(spreadsheetId, sharedBooksCache = null) {
         );
         metadata.status = book.status;
         metadata.rowIndex = book.rowIndex;
-        // Preserve size from sheet if available, otherwise getBasicInfo inside getBookMetadata handles it
-        if (
-          !metadata.size ||
-          metadata.size === "0.00" ||
-          metadata.size === "N/A"
-        ) {
+        
+        if (!metadata.size || metadata.size === "0.00" || metadata.size === "N/A") {
           metadata.size = book.size;
         }
 
+        if (scanId !== currentScanId) break;
         await addOrUpdateBook(spreadsheetId, metadata, books);
+        
         const idx = books.findIndex((b) => b.location === metadata.location);
-        if (idx !== -1) books[idx] = { ...books[idx], ...metadata };
+        if (idx !== -1) {
+          books[idx] = { ...books[idx], ...metadata };
+          cachedBooks = books;
+        }
       } catch (err) {
-        console.error(`[Enricher Error] ${book.title}:`, err.message);
+        console.error(`[Enricher Error #${scanId}] ${book.title}:`, err.message);
         const idx = books.findIndex((b) => b.location === book.location);
         if (idx !== -1) books[idx].goodreadsCheck = "Error";
       }
     }
   } catch (err) {
-    console.error(`[Enricher Fatal Error]`, err.message);
+    console.error(`[Enricher Fatal Error #${scanId}]`, err.message);
   } finally {
-    console.log(`\n✅ [Enricher] Finished.`);
-    isEnriching = false;
-    enrichResults.currentTitle = "";
+    if (scanId === currentScanId) {
+      console.log(`\n✅ [Enricher #${scanId}] Finished.`);
+      isEnriching = false;
+      enrichingScanId = -1;
+      enrichResults.currentTitle = "";
+    } else {
+      console.log(`\n🛑 [Enricher #${scanId}] Aborted and cleaning up.`);
+    }
   }
 }
 
@@ -124,9 +152,10 @@ async function startQuickScan(
   existingBooksMap,
   allBooksArray,
   foundPathsSet,
+  scanId
 ) {
   console.log(`\n*****************************************`);
-  console.log(`🔍 [SCANNER] STARTING AT: ${dir}`);
+  console.log(`🔍 [SCANNER #${scanId}] STARTING AT: ${dir}`);
   console.log(`*****************************************\n`);
 
   const filenameMap = new Map();
@@ -143,14 +172,13 @@ async function startQuickScan(
   let foldersScannedCount = 0;
 
   async function scanRecursive(currentDir) {
+    if (scanId !== currentScanId) return;
     foldersScannedCount++;
     try {
-      // Try reading with both original and normalized paths if needed
       let entries = [];
       try {
         entries = await fs.readdir(currentDir, { withFileTypes: true });
       } catch (e) {
-        // If failed, try normalizing to NFC (common fix for network drives on Mac)
         const normalizedDir = currentDir.normalize("NFC");
         if (normalizedDir !== currentDir) {
           entries = await fs.readdir(normalizedDir, { withFileTypes: true });
@@ -159,11 +187,8 @@ async function startQuickScan(
         }
       }
 
-      if (entries.length === 0) {
-        // console.log(`[Scanner] ℹ️ Empty directory: ${currentDir}`);
-      }
-
       for (const entry of entries) {
+        if (scanId !== currentScanId) return;
         const res = path.resolve(currentDir, entry.name);
         if (entry.isDirectory()) {
           await scanRecursive(res);
@@ -219,13 +244,12 @@ async function startQuickScan(
               scanResults.added++;
             }
             scanResults.processed++;
+            cachedBooks = allBooksArray;
           }
         }
       }
     } catch (err) {
       console.error(`[Scanner] ❌ ERROR reading ${currentDir}: ${err.message}`);
-      // IMPORTANT: If we can't read a directory, we MUST add all books from that directory
-      // to foundPathsSet so they aren't deleted by mistake.
       const relativeDir = path
         .relative(BOOKS_PATH, currentDir)
         .normalize("NFC");
@@ -238,19 +262,30 @@ async function startQuickScan(
   }
 
   await scanRecursive(dir);
-  console.log(`\n*****************************************`);
-  console.log(`✅ [SCANNER] FINISHED`);
-  console.log(`📂 Folders scanned: ${foldersScannedCount}`);
-  console.log(`📚 Files found: ${filesFoundCount}`);
-  console.log(`*****************************************\n`);
+  if (scanId === currentScanId) {
+    console.log(`\n*****************************************`);
+    console.log(`✅ [SCANNER #${scanId}] FINISHED`);
+    console.log(`📂 Folders scanned: ${foldersScannedCount}`);
+    console.log(`📚 Files found: ${filesFoundCount}`);
+    console.log(`*****************************************\n`);
+  } else {
+    console.log(`🛑 [SCANNER #${scanId}] ABORTED`);
+  }
 }
 
 app.get("/api/scan", async (req, res) => {
-  if (isScanning)
+  const force = req.query.force === "true";
+  
+  // If force is requested, we allow it even if isScanning is true by incrementing ID
+  if (isScanning && !force)
     return res.json({
       message: "Scan already in progress",
       results: scanResults,
     });
+  
+  currentScanId++;
+  const thisScanId = currentScanId;
+  
   isScanning = true;
   scanResults = {
     total: 0,
@@ -260,26 +295,32 @@ app.get("/api/scan", async (req, res) => {
     deleted: 0,
     errors: 0,
   };
+
   (async () => {
     try {
-      console.log(`\n🚀 [Engine] Starting...`);
+      console.log(`\n🚀 [Engine #${thisScanId}] Starting... (Force: ${force})`);
       await setupHeaders(SHEET_ID);
-      const books = await getAllBooks(SHEET_ID);
+      
+      const books = await getBooksCached(force);
+      if (thisScanId !== currentScanId) return;
+
       const existingBooksMap = new Map(
         books.map((b) => [
           (b.location || "").toString().trim().normalize("NFC"),
           b,
         ]),
       );
-      enrichMetadataWorker(SHEET_ID, books).catch((err) =>
+      enrichMetadataWorker(SHEET_ID, thisScanId).catch((err) =>
         console.error("[Enricher Startup Error]", err.message),
       );
 
       const foundPathsSet = new Set();
-      await startQuickScan(BOOKS_PATH, existingBooksMap, books, foundPathsSet);
+      await startQuickScan(BOOKS_PATH, existingBooksMap, books, foundPathsSet, thisScanId);
+
+      if (thisScanId !== currentScanId) return;
 
       // Phase 1.5: Deletion Sync
-      console.log(`\n🗑️ [Engine] Checking for deleted books...`);
+      console.log(`\n🗑️ [Engine #${thisScanId}] Checking for deleted books...`);
 
       if (foundPathsSet.size === 0 && existingBooksMap.size > 0) {
         console.error(
@@ -297,33 +338,36 @@ app.get("/api/scan", async (req, res) => {
         }
       }
 
-      // Safety check: Don't delete more than 20% of the library at once unless it's a small library
       if (
         rowsToDelete.length > 50 &&
         rowsToDelete.length > existingBooksMap.size * 0.5
       ) {
         console.error(
-          `[Engine] 🛑 SAFETY TRIGGERED: Attempting to delete ${rowsToDelete.length} books (${Math.round((rowsToDelete.length / existingBooksMap.size) * 100)}% of library). This is likely a path mismatch. Aborting.`,
+          `[Engine] 🛑 SAFETY TRIGGERED: Attempting to delete ${rowsToDelete.length} books. Aborting.`,
         );
         isScanning = false;
         return;
       }
 
-      if (rowsToDelete.length > 0) {
+      if (rowsToDelete.length > 0 && thisScanId === currentScanId) {
         await deleteBooks(SHEET_ID, rowsToDelete);
         scanResults.deleted = rowsToDelete.length;
         console.log(
-          `[Engine] Successfully deleted ${rowsToDelete.length} missing books from Sheets.`,
+          `[Engine #${thisScanId}] Successfully deleted ${rowsToDelete.length} missing books from Sheets.`,
         );
+        await getBooksCached(true);
       }
     } catch (err) {
       console.error("[Scan Error]", err.message);
     } finally {
-      isScanning = false;
+      if (thisScanId === currentScanId) {
+        isScanning = false;
+      }
     }
   })();
-  res.json({ message: "Scan started", results: scanResults });
+  res.json({ message: "Scan started", results: scanResults, scanId: thisScanId });
 });
+
 
 app.get("/api/scan/status", (req, res) => {
   res.json({
@@ -336,12 +380,13 @@ app.get("/api/scan/status", (req, res) => {
 
 app.get("/api/books", async (req, res) => {
   try {
-    const books = await getAllBooks(SHEET_ID);
+    const books = await getBooksCached();
     res.json(books);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 /**
  * Helper to get absolute path and handle Unicode normalization mismatches
