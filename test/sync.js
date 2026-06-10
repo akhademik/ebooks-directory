@@ -12,6 +12,9 @@ const {
   setupHeaders,
 } = require("../backend/sheets");
 
+// --dry-run flag: print what would happen without making any changes
+const DRY_RUN = process.argv.includes("--dry-run");
+
 // The Library Root is the base directory for all relative paths in the Google Sheet.
 // By default, it's the BOOKS_PATH from your .env file.
 // Normalize paths to use forward slashes, remove trailing slashes,
@@ -91,6 +94,11 @@ async function scanDirectory(dir, foundPaths = new Set()) {
  */
 async function syncNasWithSheet() {
   console.log(`\n🔄 [Sync] Starting synchronization...`);
+  if (DRY_RUN) {
+    console.log(
+      `🧪 [Sync] DRY-RUN MODE — no changes will be made to the Sheet.\n`,
+    );
+  }
 
   if (!LIBRARY_ROOT || !SHEET_ID) {
     console.error(
@@ -104,7 +112,9 @@ async function syncNasWithSheet() {
   console.log(`📊 Sheet ID:      ${SHEET_ID}`);
 
   try {
-    await setupHeaders(SHEET_ID);
+    if (!DRY_RUN) {
+      await setupHeaders(SHEET_ID);
+    }
 
     // 1. Get immediate children of SCAN_PATH to define the "Smart Scope"
     console.log(
@@ -135,7 +145,6 @@ async function syncNasWithSheet() {
     sheetBooks.forEach((b) => {
       const normLoc = normalizePath(b.location);
       if (sheetBooksMap.has(normLoc)) {
-        // Already seen this path — mark the later row as a duplicate
         console.log(
           `🔁 [Sync] DUPLICATE found: "${b.title}" at row ${b.rowIndex} (path: ${normLoc})`,
         );
@@ -148,10 +157,12 @@ async function syncNasWithSheet() {
     // 5. Purge existing duplicates first, before any other changes
     if (duplicateRows.length > 0) {
       console.log(
-        `\n🧹 [Sync] Found ${duplicateRows.length} duplicate row(s) — removing them first...`,
+        `\n🧹 [Sync] Found ${duplicateRows.length} duplicate row(s) — ${DRY_RUN ? "[DRY-RUN] would remove them." : "removing them first..."}`,
       );
-      await deleteBooks(SHEET_ID, duplicateRows);
-      console.log(`✅ [Sync] Duplicates removed.`);
+      if (!DRY_RUN) {
+        await deleteBooks(SHEET_ID, duplicateRows);
+        console.log(`✅ [Sync] Duplicates removed.`);
+      }
     } else {
       console.log(`✅ [Sync] No duplicates found in Sheet.`);
     }
@@ -167,10 +178,24 @@ async function syncNasWithSheet() {
       const firstComponent = normalizePath(location.split("/")[0]);
 
       if (smartScopeSet.has(firstComponent)) {
-        // If it's in our scan scope but NOT on the disk anymore, delete it.
+        // If it's in our scan scope but NOT on the disk anymore, mark for deletion.
         if (!nasFilesSet.has(location)) {
-          console.log(`🗑️ [Sync] DELETE: ${book.title}`);
-          console.log(`   - Path: ${location}`);
+          // Find similar paths on NAS to help diagnose rename vs real deletion
+          const similar = [...nasFilesSet].filter((p) =>
+            p.includes(location.split("/").pop().substring(0, 15)),
+          );
+          console.log(
+            `🗑️ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD DELETE" : "DELETE"}: "${book.title}"`,
+          );
+          console.log(`   - Sheet path : ${location}`);
+          if (similar.length > 0) {
+            console.log(`   - Similar on NAS (possible rename?):`);
+            similar.slice(0, 3).forEach((s) => console.log(`     → ${s}`));
+          } else {
+            console.log(
+              `   - No similar file found on NAS (likely truly deleted)`,
+            );
+          }
           rowsToDelete.push(book.rowIndex);
         }
       } else {
@@ -185,7 +210,7 @@ async function syncNasWithSheet() {
     console.log(`ℹ️ [Sync] Out of Scope (Safe): ${outOfScopeCount}`);
     console.log(`ℹ️ [Sync] Marked for Deletion: ${rowsToDelete.length}`);
 
-    if (rowsToDelete.length > 0) {
+    if (rowsToDelete.length > 0 && !DRY_RUN) {
       // Safety confirmation for large deletions
       if (rowsToDelete.length > 100) {
         console.log(
@@ -204,7 +229,7 @@ async function syncNasWithSheet() {
       console.log(
         `✅ [Sync] Successfully deleted ${rowsToDelete.length} books.`,
       );
-    } else {
+    } else if (rowsToDelete.length === 0) {
       console.log(`✅ [Sync] No books to delete in this scope.`);
     }
 
@@ -220,30 +245,49 @@ async function syncNasWithSheet() {
           normalizedPathFromRoot,
         );
 
-        console.log(`➕ [Sync] ADD: ${fileName}`);
-        console.log(`   - Path: ${normalizedPathFromRoot}`);
-        const basicInfo = getBasicInfo(
-          fileName,
-          normalizedPathFromRoot,
-          absolutePath,
+        console.log(
+          `➕ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD ADD" : "ADD"}: ${fileName}`,
         );
+        console.log(`   - Path: ${normalizedPathFromRoot}`);
 
-        await addOrUpdateBook(SHEET_ID, basicInfo);
+        if (!DRY_RUN) {
+          const basicInfo = getBasicInfo(
+            fileName,
+            normalizedPathFromRoot,
+            absolutePath,
+          );
+          await addOrUpdateBook(SHEET_ID, basicInfo);
+        }
         addedCount++;
       }
     }
 
     if (addedCount > 0) {
-      console.log(`✅ [Sync] Added ${addedCount} new books.`);
+      console.log(
+        `✅ [Sync] ${DRY_RUN ? "Would add" : "Added"} ${addedCount} new books.`,
+      );
     } else {
       console.log(`✅ [Sync] No new books to add.`);
     }
 
-    console.log(`\n✨ [Sync] Synchronization complete!`);
+    console.log(
+      `\n✨ [Sync] ${DRY_RUN ? "Dry-run complete!" : "Synchronization complete!"}`,
+    );
     console.log(`📋 [Sync] Summary:`);
-    console.log(`   - Duplicates removed : ${duplicateRows.length}`);
-    console.log(`   - Stale entries deleted: ${rowsToDelete.length}`);
-    console.log(`   - New books added    : ${addedCount}`);
+    console.log(
+      `   - Duplicates ${DRY_RUN ? "found" : "removed"}  : ${duplicateRows.length}`,
+    );
+    console.log(
+      `   - Entries ${DRY_RUN ? "that would be deleted" : "deleted"}  : ${rowsToDelete.length}`,
+    );
+    console.log(
+      `   - Books ${DRY_RUN ? "that would be added" : "added"}      : ${addedCount}`,
+    );
+    if (DRY_RUN) {
+      console.log(
+        `\n   ✋ No changes were made. Run without --dry-run to apply.`,
+      );
+    }
   } catch (error) {
     console.error(`❌ [Sync] Fatal Error:`, error.message);
     console.error(error.stack);
