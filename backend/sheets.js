@@ -21,6 +21,64 @@ async function getAuthClient() {
 
 const SHEETS = google.sheets("v4");
 
+/**
+ * Gets the column mapping from headers.
+ * Returns an object with indices for each required field.
+ */
+async function getColumnMapping(spreadsheetId, auth) {
+  const defaultMapping = {
+    goodreadsCheck: 0,
+    goodreadsId: 1,
+    title: 2,
+    author: 3,
+    year: 4,
+    rating: 5,
+    ratingCount: 6,
+    cover: 7,
+    source: 8,
+    size: 9,
+    location: 10,
+  };
+
+  try {
+    const response = await SHEETS.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Sheet1!A1:Z1",
+      auth,
+    });
+
+    const headers = response.data.values?.[0];
+    if (!headers || headers.length === 0) return defaultMapping;
+
+    const mapping = { ...defaultMapping };
+    const headerMap = {
+      "Goodreads Check": "goodreadsCheck",
+      "Goodreads ID": "goodreadsId",
+      Title: "title",
+      Author: "author",
+      Year: "year",
+      Rating: "rating",
+      "Number of user rating": "ratingCount",
+      "Cover URL": "cover",
+      Source: "source",
+      "File Size": "size",
+      Location: "location",
+    };
+
+    headers.forEach((h, i) => {
+      const cleanHeader = h.trim();
+      if (headerMap[cleanHeader]) {
+        mapping[headerMap[cleanHeader]] = i;
+      }
+    });
+
+    return mapping;
+  } catch (error) {
+    console.error("[Sheets Mapping Error]", error.message);
+    return defaultMapping;
+  }
+}
+
 async function setupHeaders(spreadsheetId) {
   const auth = await getAuthClient();
   const headers = [
@@ -62,44 +120,34 @@ async function setupHeaders(spreadsheetId) {
 async function getAllBooks(spreadsheetId) {
   const auth = await getAuthClient();
   try {
-    const meta = await SHEETS.spreadsheets.get({
-      spreadsheetId,
-      auth,
-    });
-    const sheet = meta.data.sheets[0];
-    const rowCount = sheet.properties.gridProperties.rowCount;
-    if (rowCount <= 1) return [];
+    const mapping = await getColumnMapping(spreadsheetId, auth);
+    const maxIndex = Math.max(...Object.values(mapping));
+    // Convert index to A-Z column notation (supports up to Z)
+    const rangeEndColumn = String.fromCharCode(65 + Math.min(25, maxIndex));
 
     const response = await SHEETS.spreadsheets.values.get({
       spreadsheetId,
-      range: "Sheet1!A2:K",
+      range: `Sheet1!A2:${rangeEndColumn}`,
       auth,
     });
 
     const rows = response.data.values || [];
-    const suspicious = rows.filter((row) => row.length < 11);
-    if (suspicious.length > 0) {
-      console.warn(
-        `⚠️ [Sheets] ${suspicious.length} rows có < 11 cột — likely cause of false duplicates`,
-      );
-    }
 
     return rows.map((row, index) => {
-      // Pad row to ensure all 11 columns exist regardless of trailing empty cells
-      const r = Array.from({ length: 11 }, (_, i) => row[i] || "");
+      const getVal = (idx) => (row[idx] || "").toString().trim();
       return {
         rowIndex: index + 2,
-        goodreadsCheck: r[0],
-        goodreadsId: r[1],
-        title: r[2],
-        author: r[3],
-        year: r[4],
-        rating: r[5],
-        ratingCount: r[6],
-        cover: r[7],
-        source: r[8],
-        size: r[9],
-        location: r[10],
+        goodreadsCheck: getVal(mapping.goodreadsCheck),
+        goodreadsId: getVal(mapping.goodreadsId),
+        title: getVal(mapping.title),
+        author: getVal(mapping.author),
+        year: getVal(mapping.year),
+        rating: getVal(mapping.rating),
+        ratingCount: getVal(mapping.ratingCount),
+        cover: getVal(mapping.cover),
+        source: getVal(mapping.source),
+        size: getVal(mapping.size),
+        location: getVal(mapping.location),
       };
     });
   } catch (error) {
@@ -111,32 +159,38 @@ async function getAllBooks(spreadsheetId) {
 
 async function addOrUpdateBook(spreadsheetId, bookData, existingBooks = null) {
   const auth = await getAuthClient();
+  const mapping = await getColumnMapping(spreadsheetId, auth);
   const books = existingBooks || (await getAllBooks(spreadsheetId));
+
+  const normalize = (s) => (s || "").toString().trim().normalize("NFC");
+  const targetLocation = normalize(bookData.location);
+
   const existingIndex = books.findIndex(
-    (b) => b.location === bookData.location,
+    (b) => normalize(b.location) === targetLocation,
   );
 
-  const rowValues = [
-    bookData.goodreadsCheck || "No",
-    bookData.goodreadsId || "",
-    bookData.title || "",
-    bookData.author || "",
-    bookData.year || "",
-    bookData.rating || "",
-    bookData.ratingCount || "",
-    bookData.cover || "",
-    bookData.source || "",
-    bookData.size || "",
-    bookData.location || "",
-  ];
+  const maxIndex = Math.max(...Object.values(mapping));
+  const rowValues = new Array(maxIndex + 1).fill("");
+  rowValues[mapping.goodreadsCheck] = bookData.goodreadsCheck || "No";
+  rowValues[mapping.goodreadsId] = bookData.goodreadsId || "";
+  rowValues[mapping.title] = bookData.title || "";
+  rowValues[mapping.author] = bookData.author || "";
+  rowValues[mapping.year] = bookData.year || "";
+  rowValues[mapping.rating] = bookData.rating || "";
+  rowValues[mapping.ratingCount] = bookData.ratingCount || "";
+  rowValues[mapping.cover] = bookData.cover || "";
+  rowValues[mapping.source] = bookData.source || "";
+  rowValues[mapping.size] = bookData.size || "";
+  rowValues[mapping.location] = bookData.location || "";
 
   try {
     if (existingIndex !== -1) {
       const existingBook = books[existingIndex];
+      const rangeEndColumn = String.fromCharCode(65 + Math.min(25, maxIndex));
 
       await SHEETS.spreadsheets.values.update({
         spreadsheetId,
-        range: `Sheet1!A${existingBook.rowIndex}:K${existingBook.rowIndex}`,
+        range: `Sheet1!A${existingBook.rowIndex}:${rangeEndColumn}${existingBook.rowIndex}`,
         valueInputOption: "RAW",
         resource: { values: [rowValues] },
         auth,
@@ -161,6 +215,7 @@ async function addOrUpdateBook(spreadsheetId, bookData, existingBooks = null) {
     throw error;
   }
 }
+
 
 async function deleteBooks(spreadsheetId, rowIndices) {
   if (!rowIndices || rowIndices.length === 0) return;

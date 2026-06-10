@@ -131,7 +131,8 @@ async function startQuickScan(
 
   const filenameMap = new Map();
   for (const book of allBooksArray) {
-    const fname = path.basename(book.location || "").normalize("NFC");
+    const loc = (book.location || "").toString().trim().normalize("NFC");
+    const fname = path.basename(loc);
     if (fname) {
       if (!filenameMap.has(fname)) filenameMap.set(fname, []);
       filenameMap.get(fname).push(book);
@@ -179,15 +180,20 @@ async function startQuickScan(
             if (!bookToUpdate) {
               const fileNameNFC = fileName.normalize("NFC");
               const candidates = filenameMap.get(fileNameNFC) || [];
-              const movedBook = candidates.find(
-                (b) => !foundPathsSet.has((b.location || "").normalize("NFC")),
-              );
+              const movedBook = candidates.find((b) => {
+                const loc = (b.location || "")
+                  .toString()
+                  .trim()
+                  .normalize("NFC");
+                return !foundPathsSet.has(loc);
+              });
 
               if (movedBook) {
                 console.log(`[Scanner] ✨ MOVED: ${fileName}`);
-                const oldLocationNFC = (movedBook.location || "").normalize(
-                  "NFC",
-                );
+                const oldLocationNFC = (movedBook.location || "")
+                  .toString()
+                  .trim()
+                  .normalize("NFC");
                 movedBook.location = normalizedPath;
                 existingBooksMap.delete(oldLocationNFC);
                 existingBooksMap.set(normalizedPath, movedBook);
@@ -260,7 +266,10 @@ app.get("/api/scan", async (req, res) => {
       await setupHeaders(SHEET_ID);
       const books = await getAllBooks(SHEET_ID);
       const existingBooksMap = new Map(
-        books.map((b) => [(b.location || "").normalize("NFC"), b]),
+        books.map((b) => [
+          (b.location || "").toString().trim().normalize("NFC"),
+          b,
+        ]),
       );
       enrichMetadataWorker(SHEET_ID, books).catch((err) =>
         console.error("[Enricher Startup Error]", err.message),
