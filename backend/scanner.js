@@ -72,7 +72,10 @@ async function getBookMetadata(
   goodreadsId = "",
   basicInfo = null,
 ) {
-  const info = basicInfo || { title: filename, author: "Unknown" };
+  // Use sheet data if title exists, otherwise fallback to parsing the filename
+  const info = (basicInfo && basicInfo.title)
+    ? basicInfo
+    : { ...(basicInfo || {}), ...parseFilename(filename) };
 
   let metadata = {
     ...info,

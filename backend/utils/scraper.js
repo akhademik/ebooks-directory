@@ -21,23 +21,23 @@ function cleanSearchQuery(query) {
 }
 
 /**
- * Strips noise from a Goodreads candidate title before scoring:
- *   1. Parenthetical/bracket series info   "Title (Series Name, #4)"  → "Title"
- *   2. Dash-separated subtitles            "Title - Subtitle"          → "Title"
+ * Strips noise from a Goodreads candidate title before scoring.
  *
- * We only want the bare main title so that extra words in subtitles or
- * series names can't accidentally inflate or deflate the similarity score.
+ * Order matters:
+ *   1. Strip ALL parenthetical/bracket blocks anywhere in the string
+ *      "Title (Series, #4) - Subtitle" → "Title  - Subtitle"
+ *      This handles series info that appears mid-title or at the end.
+ *   2. Strip everything after the first dash (subtitle)
+ *      "Title  - Subtitle" → "Title"
+ *   3. Collapse extra spaces
  *
- * NOTE: this is applied to the CANDIDATE (Goodreads result) only — the
- * query title coming from the filename is left intact so its words are
- * still fully checked.
+ * Applied to the CANDIDATE only — query title from filename is left intact.
  */
 function stripCandidateNoise(title) {
   return title
-    // eslint-disable-next-line sonarjs/slow-regex
-    .replace(/\s*[[()].*$/, "") // remove (Series...) / [Edition...]
-    // eslint-disable-next-line sonarjs/slow-regex
+    .replace(/\s*[\[(][^\]\)]*[\]\)]/g, "") // remove ALL (...) and [...] blocks
     .replace(/\s*-.*$/, "") // remove - Subtitle
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -77,18 +77,59 @@ function titleSimilarity(queryTitle, candidateTitle) {
   return (2 * recall * precision) / (recall + precision); // F1
 }
 
-const SIMILARITY_THRESHOLD = 0.4; // normal threshold for attempts 1 & 2
-const HALF_TITLE_THRESHOLD = 0.65; // stricter threshold for the weaker half-title fallback
+const SIMILARITY_THRESHOLD = 0.6; // title F1 threshold for attempts 1 & 2
+const HALF_TITLE_THRESHOLD = 0.75; // stricter threshold for the weaker half-title fallback
+const AUTHOR_MATCH_THRESHOLD = 0.5; // fraction of filename-author words that must appear in one Goodreads name
+
+/**
+ * Author check: returns true if the filename author fuzzy-matches ANY ONE
+ * of the names listed in the Goodreads author string.
+ *
+ * Goodreads lists contributors as "Name A, Name B (Translator), Name C".
+ * For Vietnamese books the filename author may be the translator, so we
+ * check every comma-separated name individually.
+ *
+ * A name is considered a match when the majority (>50%) of the filename
+ * author's words appear in that Goodreads name. This handles:
+ *   - "Nguyen Hoang Nam" vs "Nguyen Hoang Nam, David James, Kyle Cook" → match on first name
+ *   - "Phung Kim Lan" vs "Phung Kim Lan (Translator)" → match (parens stripped)
+ *   - "Tran Thi B" vs "completely different, names here" → no match
+ *
+ * Returns true (pass) when no expected author is provided.
+ */
+function authorMatches(expectedAuthor, candidateAuthor) {
+  if (!expectedAuthor || !candidateAuthor) return true;
+  const normalize = (s) => cleanSearchQuery(s).split(/\s+/).filter(Boolean);
+  const expectedWords = normalize(expectedAuthor);
+  if (expectedWords.length === 0) return true;
+
+  // Split Goodreads string into individual contributor names, strip role labels
+  // e.g. "Nguyen Hoang Nam, David James (Translator)" → ["Nguyen Hoang Nam", "David James"]
+  const candidateNames = candidateAuthor
+    .split(",")
+    .map((n) => n.replace(/\([^)]*\)/g, "").trim()) // strip (Translator) etc.
+    .filter(Boolean);
+
+  return candidateNames.some((name) => {
+    const nameWords = new Set(normalize(name));
+    if (nameWords.size === 0) return false;
+    const matched = expectedWords.filter((w) => nameWords.has(w)).length;
+    // Require majority of filename-author words to appear in this one name
+    return matched / expectedWords.length > AUTHOR_MATCH_THRESHOLD;
+  });
+}
 
 /**
  * Searches Goodreads with a given URL and returns the first result URL
- * whose title passes the similarity check against `expectedTitle`.
+ * whose title passes the F1 similarity check against `expectedTitle`,
+ * AND whose author passes a loose check against `expectedAuthor` (when provided).
  * Returns null if nothing passes.
  */
 async function findBookUrlInResults(
   page,
   searchUrl,
   expectedTitle,
+  expectedAuthor = "",
   threshold = SIMILARITY_THRESHOLD,
 ) {
   console.log(`[Scraper] Searching: ${searchUrl}`);
@@ -101,33 +142,78 @@ async function findBookUrlInResults(
     // results might still be in the DOM even without the selector
   }
 
-  // Collect up to 5 candidate results so we can pick the best match
+  // Collect up to 5 candidates — grab both title link and nearby author element
   const candidates = await page.evaluate((selector) => {
     const links = Array.from(
       document.querySelectorAll(selector + ', a[href*="/book/show/"]'),
     );
-    return links.slice(0, 5).map((a) => ({
-      href: a.href,
-      text: a.innerText?.trim() || a.title || "",
-    }));
+    return links.slice(0, 5).map((a) => {
+      const row =
+        a.closest('tr, .bookRow, [itemtype*="Book"]') || a.parentElement;
+      const authorEl = row?.querySelector(
+        '.authorName, [data-testid="author"], .by a',
+      );
+      return {
+        href: a.href,
+        text: a.innerText?.trim() || a.title || "",
+        author: authorEl?.innerText?.trim() || "",
+      };
+    });
   }, BOOK_TITLE_SELECTOR);
 
   console.log(
-    `[Scraper] Found ${candidates.length} candidate(s) for "${expectedTitle}" (threshold: ${(threshold * 100).toFixed(0)}%)`,
+    `[Scraper] Found ${candidates.length} candidate(s) for "${expectedTitle}"` +
+      (expectedAuthor ? ` by "${expectedAuthor}"` : "") +
+      ` (title>=${(threshold * 100).toFixed(0)}%` +
+      (expectedAuthor
+        ? `, author word match >${(AUTHOR_MATCH_THRESHOLD * 100).toFixed(0)}%`
+        : "") +
+      `)`,
   );
 
+  let bestRejected = null; // track best near-miss for tuning logs
+
   for (const c of candidates) {
-    const score = titleSimilarity(expectedTitle, c.text);
+    const titleScore = titleSimilarity(expectedTitle, c.text);
+    const authorPassed = authorMatches(expectedAuthor, c.author);
     console.log(
-      `[Scraper]   Candidate: "${c.text}" → F1 similarity ${(score * 100).toFixed(0)}%`,
+      `[Scraper]   "${c.text}" by "${c.author}" → title ${(titleScore * 100).toFixed(0)}% | author ${authorPassed ? "✓" : "✗"}`,
     );
-    if (score >= threshold) {
+
+    const titleFails = titleScore < threshold;
+    const authorFails = expectedAuthor && !authorPassed;
+
+    if (!titleFails && !authorFails) {
       console.log(`[Scraper]   ✓ Accepted`);
       return c.href;
     }
+
+    // Track best rejected candidate for the tuning log below
+    if (!bestRejected || titleScore > bestRejected.titleScore) {
+      bestRejected = {
+        title: c.text,
+        author: c.author,
+        titleScore,
+        authorPassed,
+      };
+    }
+
+    if (titleFails)
+      console.log(
+        `[Scraper]     ✗ title too low (${(titleScore * 100).toFixed(0)}% < ${(threshold * 100).toFixed(0)}%)`,
+      );
+    if (authorFails)
+      console.log(
+        `[Scraper]     ✗ author mismatch — "${expectedAuthor}" not found in "${c.author}"`,
+      );
   }
 
-  console.log(`[Scraper]   ✗ No candidate passed the similarity threshold`);
+  if (bestRejected) {
+    console.log(
+      `[Scraper]   ✗ Best rejected: "${bestRejected.title}" by "${bestRejected.author}"` +
+        ` — title ${(bestRejected.titleScore * 100).toFixed(0)}% | author ${bestRejected.authorPassed ? "✓" : "✗"}`,
+    );
+  }
   return null;
 }
 
@@ -144,14 +230,15 @@ async function findBookUrlInResults(
 async function scrapeGoodreads(
   titleOrQuery,
   authorOrId = "",
-  goodreadsId = ""
+  goodreadsId = "",
 ) {
   const title = titleOrQuery || "";
-  const gId = !goodreadsId && /^\d+$/.test(authorOrId) ? authorOrId : goodreadsId;
+  const gId =
+    !goodreadsId && /^\d+$/.test(authorOrId) ? authorOrId : goodreadsId;
   const author = gId === authorOrId ? "" : authorOrId;
 
   console.log(
-    `[Scraper] Launching browser — title: "${title}" | author: "${author}" | id: "${gId}"`
+    `[Scraper] Launching browser — title: "${title}" | author: "${author}" | id: "${gId}"`,
   );
 
   const browser = await puppeteer.launch({
@@ -181,27 +268,31 @@ async function scrapeGoodreads(
       const cleanTitle = cleanSearchQuery(title);
       const cleanAuthor = cleanSearchQuery(author);
 
-      // Attempt 1 — title + author (most precise)
+      // Attempt 1 — title + author search, validated against both title AND author
       if (cleanTitle && cleanAuthor) {
         const q = encodeURIComponent(`${cleanTitle} ${cleanAuthor}`);
         bookUrl = await findBookUrlInResults(
           page,
           `https://www.goodreads.com/search?q=${q}`,
           title,
+          author, // ← author cross-check
+          SIMILARITY_THRESHOLD,
         );
       }
 
-      // Attempt 2 — title only
+      // Attempt 2 — title only search, still cross-check author if we have one
       if (!bookUrl && cleanTitle) {
         const q = encodeURIComponent(cleanTitle);
         bookUrl = await findBookUrlInResults(
           page,
           `https://www.goodreads.com/search?q=${q}`,
           title,
+          author, // ← still validate author
+          SIMILARITY_THRESHOLD,
         );
       }
 
-      // Attempt 3 — first half of the title (catches long subtitle situations)
+      // Attempt 3 — first half of title, highest thresholds, still author-checked
       if (!bookUrl && cleanTitle) {
         const words = cleanTitle.split(" ");
         const halfTitle = words
@@ -213,6 +304,7 @@ async function scrapeGoodreads(
             page,
             `https://www.goodreads.com/search?q=${q}`,
             title,
+            author, // ← still validate author
             HALF_TITLE_THRESHOLD,
           );
         }
