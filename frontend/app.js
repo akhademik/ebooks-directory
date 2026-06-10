@@ -19,9 +19,7 @@ const EL = {
   searchInput: () => document.getElementById("searchInput"),
   typeFilter: () => document.getElementById("typeFilter"),
   minSize: () => document.getElementById("minSize"),
-  maxSize: () => document.getElementById("maxSize"),
   scanBtn: () => document.getElementById("scanBtn"),
-  scanIcon: () => document.getElementById("scanIcon"),
   statusArea: () => document.getElementById("statusArea"),
   statusText: () => document.getElementById("statusText"),
   scanProgress: () => document.getElementById("scanProgress"),
@@ -37,6 +35,7 @@ const EL = {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   fetchBooks();
+  checkScanStatus();
   
   // By default, start a normal scan on load. 
   // If one is already running, startScan will just resume polling.
@@ -52,7 +51,6 @@ document.addEventListener("DOMContentLoaded", () => {
     resetAndRender();
   });
   EL.minSize().addEventListener("input", resetAndRender);
-  EL.maxSize().addEventListener("input", resetAndRender);
 
   // Sort headers
   document.querySelectorAll(".th[data-sort]").forEach((th) => {
@@ -135,20 +133,55 @@ function syncChips() {
   });
 }
 
+function updateFilters() {
+  const extensions = new Set();
+  allBooks.forEach((b) => {
+    const ext = (b.location || "").split(".").pop().toLowerCase();
+    if (ext) extensions.add(ext);
+  });
+
+  const sortedExts = Array.from(extensions).sort();
+
+  // Update chips
+  const chipsContainer = EL.formatChips();
+  const currentFormat = activeFormat;
+
+  chipsContainer.innerHTML = `<button class="stat-chip ${!currentFormat ? "active" : ""}" data-format="">All</button>`;
+  
+  sortedExts.forEach((ext) => {
+    chipsContainer.innerHTML += `<button class="stat-chip ${currentFormat === ext ? "active" : ""}" data-format="${ext}">${ext.toUpperCase()}</button>`;
+  });
+
+  // Update dropdown
+  const select = EL.typeFilter();
+  select.innerHTML = '<option value="">All formats</option>';
+  sortedExts.forEach((ext) => {
+    const opt = document.createElement("option");
+    opt.value = ext;
+    opt.textContent = ext.toUpperCase();
+    if (ext === currentFormat) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
 function updateSortHeaders() {
   document.querySelectorAll(".th[data-sort]").forEach((th) => {
     const isSorted = th.dataset.sort === sortKey;
     th.classList.toggle("sorted", isSorted);
     const icon = th.querySelector(".sort-icon");
     if (icon) {
-      icon.className = isSorted
-        ? `fas fa-sort-${sortDir === "asc" ? "up" : "down"} sort-icon`
-        : "fas fa-sort sort-icon";
+      if (isSorted) {
+        const arrow = sortDir === "asc" ? "up" : "down";
+        icon.className = `fas fa-sort-${arrow} sort-icon`;
+      } else {
+        icon.className = "fas fa-sort sort-icon";
+      }
     }
   });
   if (sortKey) {
     const labels = { title: "Title", ext: "Format", size: "Size" };
-    EL.sortLabel().textContent = `Sorted by ${labels[sortKey] || sortKey} (${sortDir === "asc" ? "↑" : "↓"})`;
+    const dirArrow = sortDir === "asc" ? "↑" : "↓";
+    EL.sortLabel().textContent = `Sorted by ${labels[sortKey] || sortKey} (${dirArrow})`;
   } else {
     EL.sortLabel().textContent = "";
   }
@@ -160,7 +193,6 @@ function getFilteredBooks() {
   const queryTerms = rawQuery.split(/\s+/).filter(Boolean);
   const type = (EL.typeFilter().value || activeFormat).toLowerCase();
   const minMB = parseFloat(EL.minSize().value) || 0;
-  const maxMB = parseFloat(EL.maxSize().value) || Infinity;
 
   let books = allBooks.filter((book) => {
     const combined =
@@ -171,7 +203,7 @@ function getFilteredBooks() {
     if (type && ext !== type) return false;
 
     const sizeMB = parseFloat(book.size) || 0;
-    if (sizeMB < minMB || sizeMB > maxMB) return false;
+    if (sizeMB < minMB) return false;
 
     return true;
   });
@@ -218,8 +250,17 @@ function renderBooks(books, append = false) {
   if (!append) grid.innerHTML = "";
 
   // Update counts
-  EL.resultCount().textContent = `${books.length.toLocaleString()} book${books.length !== 1 ? "s" : ""}`;
-  EL.headerCount().textContent = `${allBooks.length.toLocaleString()} books total`;
+  const totalStr = allBooks.length.toLocaleString();
+  const filteredStr = books.length.toLocaleString();
+  
+  EL.resultCount().textContent = `${filteredStr} book${books.length !== 1 ? "s" : ""}`;
+  
+  // Header count shows "X books" or "X / Y books" if filtered
+  if (books.length === allBooks.length) {
+    EL.headerCount().textContent = `${totalStr} books`;
+  } else {
+    EL.headerCount().textContent = `${filteredStr} / ${totalStr} books`;
+  }
 
   if (books.length === 0 && !append) {
     empty.classList.add("visible");
@@ -249,9 +290,11 @@ function renderBooks(books, append = false) {
     const stars = renderStars(book.rating);
     const ratingVal = book.rating && book.rating !== "N/A" ? book.rating : "";
     const ratingCount = formatRatingCount(book.ratingCount);
-    const ratingText = ratingVal
-      ? `${ratingVal}${ratingCount ? ` (${ratingCount})` : ""}`
-      : "";
+    
+    let ratingText = "";
+    if (ratingVal) {
+      ratingText = ratingVal + (ratingCount ? ` (${ratingCount})` : "");
+    }
 
     const goodreadsUrl = book.goodreadsId
       ? `https://www.goodreads.com/book/show/${book.goodreadsId}`
@@ -259,9 +302,6 @@ function renderBooks(books, append = false) {
     const titleHtml = goodreadsUrl
       ? `<a href="${goodreadsUrl}" target="_blank" rel="noopener" title="View on Goodreads">${escHtml(book.title)}</a>`
       : escHtml(book.title);
-
-    // Serialize book for onclick without escaping issues
-    const bookJson = JSON.stringify(book);
 
     const row = document.createElement("div");
     row.className = "book-row";
@@ -336,6 +376,7 @@ async function fetchBooks() {
   try {
     const response = await fetch("/api/books");
     allBooks = await response.json();
+    updateFilters();
     renderBooks(getFilteredBooks());
   } catch (err) {
     console.error("Error fetching books:", err);
@@ -349,7 +390,6 @@ function hidePreview() {
   document.body.style.overflow = "";
 }
 
-// eslint-disable-next-line no-unused-vars
 async function showPreview(book) {
   const modal = EL.previewModal();
   const title = EL.previewTitle();
@@ -424,19 +464,15 @@ async function checkScanStatus() {
 }
 
 async function startScan(force = false, isResuming = false) {
-  const scanBtn = EL.scanBtn();
-  const scanIcon = EL.scanIcon();
   const statusArea = EL.statusArea();
   const statusText = EL.statusText();
   const scanProgress = EL.scanProgress();
   const progressBar = EL.progressBar();
 
   // Button remains enabled so user can click Force Scan anytime
-  scanIcon.classList.add("spinning");
   statusArea.classList.remove("hidden");
 
   let lastProcessed = -1;
-  let pollInterval = null;
 
   if (!isResuming) {
     try {
@@ -450,7 +486,6 @@ async function startScan(force = false, isResuming = false) {
       }
     } catch (err) {
       console.error("Scan start error:", err);
-      scanIcon.classList.remove("spinning");
       return;
     }
   }
@@ -494,7 +529,6 @@ async function startScan(force = false, isResuming = false) {
         setTimeout(() => {
           if (!window._scanPoll) statusArea.classList.add("hidden");
         }, 3000);
-        scanIcon.classList.remove("spinning");
       }
     } catch (err) {
       console.error("Poll error:", err);
