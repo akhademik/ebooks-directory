@@ -100,6 +100,18 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function getInitials(title) {
+  if (!title) return "";
+  const clean = removeAccents(title).toUpperCase();
+  const words = clean.split(/[\s~/\\-]+/).filter(w => {
+    return w && /^[A-Z0-9]/.test(w);
+  });
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]);
+  }
+  return words.length > 0 ? words[0][0] : "";
+}
+
 function removeAccents(str) {
   return (str || "")
     .normalize("NFD")
@@ -247,8 +259,6 @@ function renderBooks(books, append = false) {
   const grid = EL.bookGrid();
   const empty = EL.emptyState();
 
-  if (!append) grid.innerHTML = "";
-
   // Update counts
   const totalStr = allBooks.length.toLocaleString();
   const filteredStr = books.length.toLocaleString();
@@ -263,6 +273,7 @@ function renderBooks(books, append = false) {
   }
 
   if (books.length === 0 && !append) {
+    grid.innerHTML = "";
     empty.classList.add("visible");
     return;
   }
@@ -275,19 +286,20 @@ function renderBooks(books, append = false) {
   const fragment = document.createDocumentFragment();
 
   slice.forEach((book, i) => {
-    const globalIdx = start + i + 1;
-    const ext = (book.location || "").split(".").pop().toLowerCase() || "book";
-    const canPreview = SUPPORTED_PREVIEW_EXTS.has(ext);
+  const globalIdx = start + i + 1;
+  const ext = (book.location || "").split(".").pop().toLowerCase() || "book";
+  const canPreview = SUPPORTED_PREVIEW_EXTS.has(ext);
 
-    const defaultCover = `https://ui-avatars.com/api/?name=${encodeURIComponent(book.title)}&size=100&background=1e293b&color=6366f1&bold=true&format=svg`;
-    let coverUrl = defaultCover;
-    if (book.cover && book.cover.startsWith("http")) {
-      coverUrl = book.cover;
-    } else if (book.rowIndex) {
-      coverUrl = `/api/cover/${book.rowIndex}`;
-    }
+  let coverUrl = "";
+  if (book.cover && book.cover.startsWith("http")) {
+    coverUrl = book.cover;
+  } else if (book.rowIndex) {
+    coverUrl = `/api/cover/${book.rowIndex}`;
+  }
 
-    const stars = renderStars(book.rating);
+  const initials = getInitials(book.title);
+  const stars = renderStars(book.rating);
+
     const ratingVal = book.rating && book.rating !== "N/A" ? book.rating : "";
     const ratingCount = formatRatingCount(book.ratingCount);
     
@@ -310,9 +322,9 @@ function renderBooks(books, append = false) {
             <div class="row-idx">${globalIdx}</div>
 
             <div class="book-info">
-                <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}" data-book-index="${escHtml(String(book.rowIndex))}">
-                    <img src="${coverUrl}" alt="" loading="lazy"
-                         onerror="this.onerror=null;this.src='${defaultCover}'">
+                <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}" 
+                     data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
+                    ${coverUrl ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.style.display='none'">` : ""}
                 </div>
                 <div class="book-text">
                     <div class="book-title">${titleHtml}</div>
@@ -368,7 +380,11 @@ function renderBooks(books, append = false) {
     fragment.appendChild(row);
   });
 
-  grid.appendChild(fragment);
+  if (append) {
+    grid.appendChild(fragment);
+  } else {
+    grid.replaceChildren(fragment);
+  }
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
@@ -470,7 +486,7 @@ async function startScan(force = false, isResuming = false) {
   const progressBar = EL.progressBar();
 
   // Button remains enabled so user can click Force Scan anytime
-  statusArea.classList.remove("hidden");
+  statusArea.classList.add("is-active");
 
   let lastProcessed = -1;
 
@@ -527,7 +543,7 @@ async function startScan(force = false, isResuming = false) {
         progressBar.style.width = "100%";
         fetchBooks();
         setTimeout(() => {
-          if (!window._scanPoll) statusArea.classList.add("hidden");
+          if (!window._scanPoll) statusArea.classList.remove("is-active");
         }, 3000);
       }
     } catch (err) {
