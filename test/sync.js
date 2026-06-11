@@ -8,6 +8,7 @@ const { getBasicInfo } = require("../backend/scanner");
 const {
   getAllBooks,
   addOrUpdateBook,
+  addBooks, // batch insert — preferred when available
   deleteBooks,
   setupHeaders,
 } = require("../backend/sheets");
@@ -21,11 +22,7 @@ const DRY_RUN = process.argv.includes("--dry-run");
 // apply NFC Unicode normalization, and lowercase for consistent comparison.
 function normalizePath(p) {
   if (!p) return "";
-  return p
-    .replace(/\\/g, "/")
-    .replace(/\/+$/, "")
-    .normalize("NFC")
-    .toLowerCase();
+  return p.replace(/\\/g, "/").replace(/\/+$/, "").normalize("NFC");
 }
 
 const LIBRARY_ROOT = normalizePath(process.env.BOOKS_PATH);
@@ -116,24 +113,12 @@ async function syncNasWithSheet() {
       await setupHeaders(SHEET_ID);
     }
 
-    // 1. Get immediate children of SCAN_PATH to define the "Smart Scope"
-    console.log(
-      `🔎 [Sync] Identifying smart scope from children of: ${SCAN_PATH}`,
-    );
-    const scanChildren = await fs.readdir(SCAN_PATH);
-    const smartScopeSet = new Set(
-      scanChildren.map((name) => normalizePath(name)),
-    );
-    console.log(
-      `✅ [Sync] Smart scope identified with ${smartScopeSet.size} top-level items.`,
-    );
-
-    // 2. Get current files on NAS (recursive)
+    // 1. Get current files on NAS (recursive)
     console.log(`🔍 [Sync] Scanning NAS for all files in scope...`);
     const nasFilesSet = await scanDirectory(SCAN_PATH);
     console.log(`✅ [Sync] Found ${nasFilesSet.size} total files on NAS.`);
 
-    // 3. Get current entries in Sheet
+    // 2. Get current entries in Sheet
     console.log(`🔍 [Sync] Reading Google Sheet...`);
     const sheetBooks = await getAllBooks(SHEET_ID);
     console.log(`✅ [Sync] Found ${sheetBooks.length} total entries in Sheet.`);
@@ -162,6 +147,17 @@ async function syncNasWithSheet() {
       if (!DRY_RUN) {
         await deleteBooks(SHEET_ID, duplicateRows);
         console.log(`✅ [Sync] Duplicates removed.`);
+
+        // Re-fetch the sheet so rowIndex values reflect the post-deletion state.
+        // Deleting rows shifts every subsequent row up; stale indices would cause
+        // Step 6 to delete the wrong rows.
+        console.log(`🔄 [Sync] Re-reading Sheet to get fresh row indices...`);
+        const freshBooks = await getAllBooks(SHEET_ID);
+        sheetBooksMap.clear();
+        freshBooks.forEach((b) => {
+          sheetBooksMap.set(normalizePath(b.location), b);
+        });
+        console.log(`✅ [Sync] Sheet re-read. ${sheetBooksMap.size} entries.`);
       }
     } else {
       console.log(`✅ [Sync] No duplicates found in Sheet.`);
@@ -173,11 +169,7 @@ async function syncNasWithSheet() {
     console.log(`\n🕵️ [Sync] Checking for deletions...`);
     let outOfScopeCount = 0;
     for (const [location, book] of sheetBooksMap.entries()) {
-      // SMART SCOPE CHECK:
-      // A book is in scope ONLY if its first path component is in our smartScopeSet.
-      const firstComponent = normalizePath(location.split("/")[0]);
-
-      if (smartScopeSet.has(firstComponent)) {
+      if (isLocationInScope(location)) {
         // If it's in our scan scope but NOT on the disk anymore, mark for deletion.
         if (!nasFilesSet.has(location)) {
           // Find similar paths on NAS to help diagnose rename vs real deletion
@@ -236,6 +228,8 @@ async function syncNasWithSheet() {
     // 7. Identify books to add (on NAS but not in Sheet)
     console.log(`\n🕵️ [Sync] Checking for new books to add...`);
     let addedCount = 0;
+    const booksToAdd = [];
+
     for (const normalizedPathFromRoot of nasFilesSet) {
       if (!sheetBooksMap.has(normalizedPathFromRoot)) {
         const fileName = path.basename(normalizedPathFromRoot);
@@ -256,9 +250,31 @@ async function syncNasWithSheet() {
             normalizedPathFromRoot,
             absolutePath,
           );
-          await addOrUpdateBook(SHEET_ID, basicInfo);
+          booksToAdd.push(basicInfo);
         }
         addedCount++;
+      }
+    }
+
+    // Write all new books — batch insert preferred (1 API call), sequential fallback
+    if (!DRY_RUN && booksToAdd.length > 0) {
+      if (typeof addBooks === "function") {
+        // Ideal path: one batch append to the sheet
+        console.log(`📤 [Sync] Batch-inserting ${booksToAdd.length} books...`);
+        await addBooks(SHEET_ID, booksToAdd);
+      } else {
+        // Fallback: sequential with rate-limit delay (1 req/sec ≈ safe under 60/min)
+        console.log(
+          `📤 [Sync] Adding ${booksToAdd.length} books (rate-limited sequential)...`,
+        );
+        for (let i = 0; i < booksToAdd.length; i++) {
+          await addOrUpdateBook(SHEET_ID, booksToAdd[i]);
+          if ((i + 1) % 10 === 0) {
+            console.log(`   ... ${i + 1}/${booksToAdd.length} done`);
+          }
+          // 1.1 s delay keeps read+write requests well under the 60/min quota
+          await new Promise((resolve) => setTimeout(resolve, 1100));
+        }
       }
     }
 

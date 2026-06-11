@@ -135,6 +135,8 @@ async function getAllBooks(spreadsheetId) {
 
     return rows.map((row, index) => {
       const getVal = (idx) => (row[idx] || "").toString().trim();
+      const normalizeLoc = (s) =>
+        s.replace(/\\/g, "/").replace(/\/+$/, "").normalize("NFC").trim();
       return {
         rowIndex: index + 2,
         goodreadsCheck: getVal(mapping.goodreadsCheck),
@@ -147,7 +149,7 @@ async function getAllBooks(spreadsheetId) {
         cover: getVal(mapping.cover),
         source: getVal(mapping.source),
         size: getVal(mapping.size),
-        location: getVal(mapping.location),
+        location: normalizeLoc(row[mapping.location] || ""),
       };
     });
   } catch (error) {
@@ -216,6 +218,52 @@ async function addOrUpdateBook(spreadsheetId, bookData, existingBooks = null) {
   }
 }
 
+/**
+ * Batch-inserts many books in a single API call.
+ * Fetches the column mapping once, builds all rows, then appends them together.
+ * Use this instead of calling addOrUpdateBook in a loop.
+ */
+async function addBooks(spreadsheetId, booksArray) {
+  if (!booksArray || booksArray.length === 0) return;
+
+  const auth = await getAuthClient();
+  const mapping = await getColumnMapping(spreadsheetId, auth); // 1 read, only once
+  const maxIndex = Math.max(...Object.values(mapping));
+
+  const rows = booksArray.map((bookData) => {
+    const row = new Array(maxIndex + 1).fill("");
+    row[mapping.goodreadsCheck] = bookData.goodreadsCheck || "No";
+    row[mapping.goodreadsId] = bookData.goodreadsId || "";
+    row[mapping.title] = bookData.title || "";
+    row[mapping.author] = bookData.author || "";
+    row[mapping.year] = bookData.year || "";
+    row[mapping.rating] = bookData.rating || "";
+    row[mapping.ratingCount] = bookData.ratingCount || "";
+    row[mapping.cover] = bookData.cover || "";
+    row[mapping.source] = bookData.source || "";
+    row[mapping.size] = bookData.size || "";
+    row[mapping.location] = bookData.location || "";
+    return row;
+  });
+
+  try {
+    await SHEETS.spreadsheets.values.append({
+      spreadsheetId,
+      range: "Sheet1!A1",
+      valueInputOption: "RAW",
+      resource: { values: rows },
+      auth,
+    });
+    console.log(`[Sheets] Batch-added ${rows.length} books.`);
+  } catch (error) {
+    if (error.message.includes("Quota exceeded")) {
+      console.warn(`[Sheets Quota Error] Waiting 60s before retrying batch...`);
+      await new Promise((r) => setTimeout(r, 60000));
+      return addBooks(spreadsheetId, booksArray);
+    }
+    throw error;
+  }
+}
 
 async function deleteBooks(spreadsheetId, rowIndices) {
   if (!rowIndices || rowIndices.length === 0) return;
@@ -247,4 +295,10 @@ async function deleteBooks(spreadsheetId, rowIndices) {
   }
 }
 
-module.exports = { setupHeaders, getAllBooks, addOrUpdateBook, deleteBooks };
+module.exports = {
+  setupHeaders,
+  getAllBooks,
+  addOrUpdateBook,
+  addBooks,
+  deleteBooks,
+};
