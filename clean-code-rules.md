@@ -1,4 +1,5 @@
 # Clean Code Rules — ebooks-directory
+
 > Dành cho AI assistant (Claude Code, Cursor, Copilot, v.v.) khi refactor project này.
 > Stack: Node.js / Express (backend) + Vanilla JavaScript (frontend) + ESLint đã cấu hình sẵn.
 
@@ -18,8 +19,6 @@ npm run lint -- --fix
 # Bước 3 – Chạy lại lint lần cuối để xác nhận sạch
 npm run lint
 
-# Bước 4 – Chạy test nếu có
-npm test
 ```
 
 > Chỉ báo cáo hoàn thành khi **0 lỗi ESLint**. Nếu còn warning, liệt kê rõ ràng.
@@ -29,6 +28,7 @@ npm test
 ## 1. ĐẶT TÊN (Meaningful Names)
 
 ### Quy tắc
+
 - **Tên phải tự giải thích** — đọc tên xong phải hiểu: nó là gì, làm gì, dùng khi nào.
 - **Không dùng viết tắt** trừ các từ cực kỳ phổ biến (`req`, `res`, `err`, `id`, `url`).
 - **Nhất quán toàn project** — chọn một từ cho một khái niệm và dùng xuyên suốt.
@@ -36,14 +36,14 @@ npm test
 
 ### Ví dụ cụ thể cho project này
 
-| ❌ Tránh | ✅ Dùng |
-|---|---|
-| `d`, `tmp`, `val` | `elapsedDays`, `tempFilePath`, `bookTitle` |
-| `getData()` | `fetchBooksFromSheet()` |
-| `process()` | `enrichBookMetadata()` |
-| `check()` | `isValidGoodreadsId()` |
-| `flag`, `status` | `isSyncing`, `hasMetadata` |
-| `list` (nếu không phải Array/List) | `books`, `pendingBooks` |
+| ❌ Tránh                                            | ✅ Dùng                                                                     |
+| --------------------------------------------------- | --------------------------------------------------------------------------- |
+| `d`, `tmp`, `val`                                   | `elapsedDays`, `tempFilePath`, `bookTitle`                                  |
+| `getData()`                                         | `fetchBooksFromSheet()`                                                     |
+| `process()`                                         | `enrichBookMetadata()`                                                      |
+| `check()`                                           | `isValidGoodreadsId()`                                                      |
+| `flag`, `status`                                    | `isSyncing`, `hasMetadata`                                                  |
+| `list` (nếu không phải Array/List)                  | `books`, `pendingBooks`                                                     |
 | `getBooks()` vs `fetchBooks()` vs `retrieveBooks()` | Chọn **một** — ưu tiên `getBooks()` cho cache/local, `fetchBooks()` cho I/O |
 
 ---
@@ -51,6 +51,7 @@ npm test
 ## 2. HÀM (Clean Functions)
 
 ### Quy tắc
+
 - **Một hàm = một việc duy nhất.** Nếu có thể đặt tên hàm với từ "và" thì đó là dấu hiệu nên tách ra.
 - **Tối đa 20 dòng** cho hàm thông thường. Trên 30 dòng phải có lý do đặc biệt.
 - **Tối đa 2 tham số.** Từ 3 trở lên → gom vào object có tên rõ ràng.
@@ -66,7 +67,7 @@ npm test
 async function processBook(title, author, id, sheet, scraper) {
   const data = await scraper.scrape(id);
   sheet.update(title, author, data);
-  console.log('done');
+  console.log("done");
   return data;
 }
 
@@ -85,6 +86,7 @@ async function updateBookInSheet({ book, metadata, sheetClient }) {
 ## 3. CHÚ THÍCH & ĐỊNH DẠNG
 
 ### Quy tắc
+
 - **Không chú thích để giải thích code xấu** — thay vào đó hãy đặt tên tốt hơn hoặc tách hàm.
 - **Chú thích chỉ dùng cho:** lý do tại sao (why), cảnh báo side effect, TODO có issue tracking.
 - **Giới hạn dòng: 100 ký tự** (phù hợp hơn cho JS hiện đại).
@@ -106,6 +108,7 @@ const headers = buildStealthHeaders();
 ## 4. XỬ LÝ LỖI (Error Handling)
 
 ### Quy tắc
+
 - **Dùng `try/catch`** thay vì trả về error codes hay `null` im lặng.
 - **Không catch rồi bỏ qua** — ít nhất phải log lỗi với đủ context.
 - **Tách error handling khỏi business logic** — không để try/catch ôm toàn bộ hàm.
@@ -144,6 +147,7 @@ async function fetchBooksFromSheet() {
 ## 5. KHÔNG LẶP LẠI (DRY)
 
 ### Quy tắc
+
 - **Cùng logic xuất hiện 2+ lần** → tách thành hàm hoặc module dùng chung.
 - **Magic numbers/strings** → khai báo constant có tên.
 - **Không copy-paste** code giữa các route handler — dùng middleware hoặc helper.
@@ -177,6 +181,7 @@ backend/
 ```
 
 ### Quy tắc module
+
 - **Route file** chỉ chứa `router.get/post/...` và gọi controller.
 - **Controller** không chứa business logic — chỉ validate input, gọi service, format response.
 - **Service** không biết gì về HTTP (`req`, `res`) — chỉ nhận/trả plain data.

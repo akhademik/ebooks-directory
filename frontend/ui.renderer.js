@@ -1,5 +1,14 @@
-import { state, resetPagination, incrementPage, setPendingDeletePath } from "./state.manager.js";
+import {
+  state,
+  resetPagination,
+  incrementPage,
+  setPendingDeletePath,
+  resetDuplicatesPagination,
+  incrementDuplicatesPage,
+} from "./state.manager.js";
 import { fetchPreviewApi } from "./api.service.js";
+
+const DUPLICATE_GROUPS_PER_PAGE = 50;
 
 // ─── Element refs ─────────────────────────────────────────────────────────────
 export const EL = {
@@ -198,12 +207,23 @@ export function updateCountLabels(filteredCount, totalCount) {
   const totalStr = totalCount.toLocaleString();
   const filteredStr = filteredCount.toLocaleString();
 
-  EL.resultCount().textContent = `${filteredStr} book${filteredCount !== 1 ? "s" : ""}`;
+  const resultCount = EL.resultCount();
+  const headerCount = EL.headerCount();
 
-  if (filteredCount === totalCount) {
-    EL.headerCount().textContent = `${totalStr} books`;
+  if (resultCount) {
+    resultCount.textContent = `${filteredStr} book${filteredCount !== 1 ? "s" : ""}`;
   } else {
-    EL.headerCount().textContent = `${filteredStr} / ${totalStr} books`;
+    console.error("[UI] resultCount element not found in updateCountLabels!");
+  }
+
+  if (headerCount) {
+    if (filteredCount === totalCount) {
+      headerCount.textContent = `${totalStr} books`;
+    } else {
+      headerCount.textContent = `${filteredStr} / ${totalStr} books`;
+    }
+  } else {
+    console.error("[UI] headerCount element not found in updateCountLabels!");
   }
 }
 
@@ -223,7 +243,8 @@ export function getBookMetadata(book) {
   let coverUrl = "";
   if (book.cover && book.cover.startsWith("http")) {
     coverUrl = book.cover;
-  } else if (book.rowIndex) {
+  } else if (book.rowIndex && ext === "epub") {
+    // Only request local cover for supported format (EPUB)
     coverUrl = `/api/cover/${book.rowIndex}`;
   }
 
@@ -253,6 +274,24 @@ export function updateRowContent({ row, book, displayIndex }) {
   }
 }
 
+export function syncDuplicatesBtnState() {
+  const btn = EL.duplicatesBtn();
+  if (!btn) return;
+  const activeClasses = ["bg-orange-500/20", "text-white", "border-orange-500"];
+
+  if (state.isShowingDuplicates) {
+    btn.classList.add(...activeClasses);
+    if (state.isCalculatingDuplicates) {
+      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating...`;
+    }
+  } else {
+    btn.classList.remove(...activeClasses);
+    const badgeHtml = `<span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>`;
+    btn.innerHTML = `<i class="fas fa-copy"></i> Duplicates ${badgeHtml}`;
+    updateDuplicateBadge();
+  }
+}
+
 export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
   const { ext, initials, stars, ratingText, coverUrl } = metadata;
   const goodreadsUrl = book.goodreadsId ? `https://www.goodreads.com/book/show/${book.goodreadsId}` : "";
@@ -260,35 +299,40 @@ export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
     ? `<a href="${goodreadsUrl}" target="_blank" rel="noopener" title="View on Goodreads">${escHtml(book.title)}</a>`
     : escHtml(book.title);
 
+  // Use a fallback for cover error to prevent console spam and broken UI
+  const coverHtml = coverUrl 
+    ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.onerror=null; this.parentElement.classList.add('no-cover'); this.remove();">` 
+    : "";
+
   return `
-    <div class="row-idx">${displayIndex}</div>
-    <div class="book-info">
-        <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}" 
-             data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
-            ${coverUrl ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.style.display='none'">` : ""}
-        </div>
-        <div class="book-text">
-            <div class="book-title">${titleHtml}</div>
-            <div class="book-author">
-              ${escHtml(book.author || "")}
-              ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
-            </div>
-            ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
-        </div>
-    </div>
-    <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
-    <div class="size-cell">${book.size || "—"} MB</div>
-    <div class="action-cell">
-        <button class="icon-btn ${metadata.canPreview ? "" : "disabled"}" title="${metadata.canPreview ? "Preview" : "Preview not available"}"
-                data-action="preview" ${metadata.canPreview ? "" : 'disabled aria-disabled="true"'}>
-            <i class="fas fa-eye"></i>
-        </button>
-    </div>
-    <div class="action-cell">
-        <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download"><i class="fas fa-download"></i></a>
-    </div>
-    ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
-  `;
+     <div class="row-idx">${displayIndex}</div>
+     <div class="book-info">
+         <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}"
+              data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
+             ${coverHtml}
+         </div>
+         <div class="book-text">
+             <div class="book-title">${titleHtml}</div>
+             <div class="book-author">
+               ${escHtml(book.author || "")}
+               ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
+             </div>
+             ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
+         </div>
+     </div>
+     <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
+     <div class="size-cell">${book.size || "—"} MB</div>
+     <div class="action-cell">
+         <button class="icon-btn ${metadata.canPreview ? "" : "disabled"}" title="${metadata.canPreview ? "Preview" : "Preview not available"}"
+                 data-action="preview" ${metadata.canPreview ? "" : 'disabled aria-disabled="true"'}>
+             <i class="fas fa-eye"></i>
+         </button>
+     </div>
+     <div class="action-cell">
+         <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download"><i class="fas fa-download"></i></a>
+     </div>
+     ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
+   `;
 }
 
 export function attachRowEventListeners(row, book, canPreview) {
@@ -303,10 +347,24 @@ export function attachRowEventListeners(row, book, canPreview) {
 // ─── Render ───────────────────────────────────────────────────────────────────
 export function resetAndRender() {
   resetPagination();
-  renderBooks(getFilteredBooks());
+  resetDuplicatesPagination();
+  if (state.isShowingDuplicates) {
+    renderDuplicates();
+  } else {
+    renderBooks(getFilteredBooks());
+  }
 }
 
 export function loadNextPage() {
+  if (state.isShowingDuplicates) {
+    if (!state.duplicateResults) return;
+    const totalGroups = state.duplicateResults.stats.totalGroups;
+    if (state.duplicatesPage * DUPLICATE_GROUPS_PER_PAGE >= totalGroups) return;
+    incrementDuplicatesPage();
+    renderDuplicates(true);
+    return;
+  }
+
   const filtered = getFilteredBooks();
   if (state.currentPage * state.BOOKS_PER_PAGE >= filtered.length) return;
   incrementPage();
@@ -515,8 +573,26 @@ export function generateSyncSectionHtml({
 }
 
 // ─── Duplicates View ─────────────────────────────────────────────────────────
+export function renderDuplicateLoading() {
+  const grid = EL.bookGrid();
+  const empty = EL.emptyState();
+  
+  if (empty) empty.classList.remove("visible");
+  if (grid) {
+    grid.innerHTML = `
+      <div style="grid-column:1/-1;text-align:center;padding:120px 0;color:#f97316;">
+          <i class="fas fa-circle-notch fa-spin" style="font-size:32px;margin-bottom:16px;opacity:0.8;"></i>
+          <p style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;">Analyzing library for duplicates...</p>
+          <p style="font-size:10px;color:#64748b;margin-top:8px;">This might take a few seconds on the first run.</p>
+      </div>
+    `;
+  }
+}
+
 export function updateDuplicateBadge() {
   const badge = EL.duplicateBadge();
+  if (!badge) return;
+
   const total = state.duplicateResults ? state.duplicateResults.stats.totalGroups : 0;
   if (total > 0) {
     badge.textContent = total;
@@ -526,17 +602,25 @@ export function updateDuplicateBadge() {
   }
 }
 
-export function renderDuplicates() {
-  if (!state.isShowingDuplicates) return;
+export function renderDuplicates(append = false) {
+  if (!state.isShowingDuplicates || !state.duplicateResults) return;
   
   const grid = EL.bookGrid();
   const empty = EL.emptyState();
+  const countLabel = EL.resultCount();
   
-  grid.innerHTML = "";
+  if (!grid || !empty || !countLabel) return;
+  
+  if (!append) {
+    grid.innerHTML = "";
+    resetDuplicatesPagination();
+  }
   
   const { confirmed, probable, possible, stats } = state.duplicateResults;
   
-  EL.resultCount().textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
+  if (!append) {
+    countLabel.textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
+  }
   
   if (stats.totalGroups === 0) {
     empty.classList.add("visible");
@@ -544,74 +628,124 @@ export function renderDuplicates() {
   }
   empty.classList.remove("visible");
 
-  renderDuplicateSection("Confirmed Duplicates", confirmed, "bg-rose-500/10 text-rose-500 border-rose-500/20");
-  renderDuplicateSection("Probable Duplicates", probable, "bg-amber-500/10 text-amber-500 border-amber-500/20");
-  renderDuplicateSection("Possible Duplicates", possible, "bg-orange-500/10 text-orange-500 border-orange-500/20");
+  // Flatten all groups with metadata for pagination
+  const allGroups = [
+    ...confirmed.map(g => ({ ...g, type: "Confirmed", badge: "bg-rose-500/10 text-rose-500 border-rose-500/20" })),
+    ...probable.map(g => ({ ...g, type: "Probable", badge: "bg-amber-500/10 text-amber-500 border-amber-500/20" })),
+    ...possible.map(g => ({ ...g, type: "Possible", badge: "bg-orange-500/10 text-orange-500 border-orange-500/20" }))
+  ];
+
+  const start = (state.duplicatesPage - 1) * DUPLICATE_GROUPS_PER_PAGE;
+  const end = state.duplicatesPage * DUPLICATE_GROUPS_PER_PAGE;
+  const slice = allGroups.slice(start, end);
+
+  const fragment = document.createDocumentFragment();
+  let currentType = (append && start > 0) ? allGroups[start - 1].type : null;
+
+  slice.forEach(group => {
+    if (group.type !== currentType) {
+      const sectionHeader = document.createElement("div");
+      sectionHeader.className = "col-span-full mt-8 mb-4 flex items-center gap-3";
+      sectionHeader.innerHTML = `
+        <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${group.badge}">${group.type} Duplicates</span>
+        <div class="h-px flex-1 bg-white/5"></div>
+      `;
+      fragment.appendChild(sectionHeader);
+      currentType = group.type;
+    }
+    fragment.appendChild(createDuplicateGroup(group));
+  });
+
+  grid.appendChild(fragment);
 }
 
-export function renderDuplicateSection(title, groups, badgeClass) {
-  if (groups.length === 0) return;
+function createDuplicateGroup(group) {
+  const groupEl = document.createElement("div");
+  groupEl.className = "col-span-full bg-slate-900/40 rounded-2xl border border-white/5 p-4 mb-4";
+  // content-visibility: auto is a performance booster for long lists
+  groupEl.style.contentVisibility = "auto";
+  groupEl.style.containIntrinsicSize = "0 150px";
   
-  const grid = EL.bookGrid();
-  
-  const sectionHeader = document.createElement("div");
-  sectionHeader.className = "col-span-full mt-8 mb-4 flex items-center gap-3";
-  sectionHeader.innerHTML = `
-    <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${badgeClass}">${title}</span>
-    <div class="h-px flex-1 bg-white/5"></div>
+  groupEl.innerHTML = `
+    <div class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3 flex items-center justify-between">
+      <span>Group: ${escHtml(group.key || "Unknown")}</span>
+      <span>${group.files ? group.files.length : 0} files</span>
+    </div>
+    <div class="space-y-1"></div>
   `;
-  grid.appendChild(sectionHeader);
   
-  groups.forEach(group => {
-    const groupEl = document.createElement("div");
-    groupEl.className = "col-span-full bg-slate-900/40 rounded-2xl border border-white/5 p-4 mb-4";
-    
-    groupEl.innerHTML = `
-      <div class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3 flex items-center justify-between">
-        <span>Group: ${escHtml(group.key)}</span>
-        <span>${group.files.length} files</span>
-      </div>
-      <div class="space-y-1" id="group-${group.key}"></div>
-    `;
-    
-    const filesContainer = groupEl.querySelector(".space-y-1");
-    group.files.forEach(file => {
-      const isDeleted = state.deletedInSession.has(file.path);
-      const fileEl = document.createElement("div");
-      
-      // Extract filename and directory path
-      const pathParts = file.path.split("/");
-      const fileName = pathParts.pop();
-      const dirPath = pathParts.length > 0 ? pathParts.join("/") + "/" : "./";
-
-      fileEl.className = `flex items-center justify-between py-2 border-b border-white/5 last:border-0 group ${isDeleted ? "deleted-file" : ""}`;
-      fileEl.id = `dup-${btoa(encodeURIComponent(file.path)).replace(/=/g, "")}`;
-      fileEl.innerHTML = `
-        <div class="flex-1 min-w-0 pr-4">
-          <div class="text-base font-bold ${isDeleted ? "text-rose-400" : "text-indigo-300"} truncate" title="${escHtml(fileName)}">
-            ${escHtml(fileName)}
-          </div>
-          <div class="text-[10px] text-slate-500 mt-1 truncate font-mono" title="${escHtml(file.path)}">
-            <span class="opacity-50">Path:</span> ${escHtml(dirPath)}
-          </div>
-          <div class="text-[10px] text-slate-400 mt-0.5 font-medium">
-            <span class="inline-block px-1.5 py-0.5 rounded bg-slate-800 border border-white/5 mr-1">${file.ext.toUpperCase()}</span>
-            ${file.size} MB
-          </div>
-        </div>
-        <button class="px-3 py-1.5 rounded-lg ${isDeleted ? "delete-file-btn deleted" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white opacity-0 group-hover:opacity-100 delete-file-btn"}" ${isDeleted ? "disabled" : ""}>
-          <i class="fas ${isDeleted ? "fa-check" : "fa-trash-alt"} mr-1"></i> ${isDeleted ? "Deleted" : "Delete"}
-        </button>
-      `;
-      
-      if (!isDeleted) {
-        fileEl.querySelector(".delete-file-btn").addEventListener("click", () => showDeleteModal(file.path));
-      }
-      filesContainer.appendChild(fileEl);
-    });
-    
-    grid.appendChild(groupEl);
+  const filesContainer = groupEl.querySelector(".space-y-1");
+  const files = group.files || [];
+  const sortedFiles = sortFilesByRecommendation(files);
+  
+  sortedFiles.forEach(file => {
+    filesContainer.appendChild(createDuplicateFileRow(file));
   });
+  
+  return groupEl;
+}
+
+function sortFilesByRecommendation(files) {
+  if (!Array.isArray(files)) return [];
+  return [...files].sort((a, b) => {
+    if (a.recommended && !b.recommended) return -1;
+    if (!a.recommended && b.recommended) return 1;
+    return 0;
+  });
+}
+
+function createDuplicateFileRow(file) {
+  const filePath = file.path || "";
+  const isDeleted = state.deletedInSession.has(filePath);
+  const isRec = file.recommended && !isDeleted;
+  const fileEl = document.createElement("div");
+  
+  const pathParts = filePath.split("/");
+  const fileName = pathParts.pop() || "Unnamed File";
+  const dirPath = pathParts.length > 0 ? pathParts.join("/") + "/" : "./";
+
+  const bgClass = isRec ? "bg-emerald-500/5 border-emerald-500/20" : "border-white/5";
+  const titleColor = getFileTitleColor(isDeleted, isRec);
+  const badgeHtml = isRec ? getRecommendedBadgeHtml() : "";
+  const ext = (file.ext || "").toUpperCase();
+
+  fileEl.className = `flex items-center justify-between py-2 border-b last:border-0 p-2 rounded-lg ${bgClass} ${isDeleted ? "deleted-file" : "hover:bg-white/5"}`;
+  fileEl.id = `dup-${btoa(encodeURIComponent(filePath)).replace(/=/g, "")}`;
+  
+  fileEl.innerHTML = `
+    <div class="flex-1 min-w-0 pr-4">
+      <div class="text-base font-bold ${titleColor} truncate flex items-center" title="${escHtml(fileName)}">
+        ${escHtml(fileName)}
+        ${badgeHtml}
+      </div>
+      <div class="text-[10px] text-slate-500 mt-1 truncate font-mono" title="${escHtml(filePath)}">
+        <span class="opacity-50">Path:</span> ${escHtml(dirPath)}
+      </div>
+      <div class="text-[10px] text-slate-400 mt-0.5 font-medium">
+        <span class="inline-block px-1.5 py-0.5 rounded ${isRec ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-300" : "bg-slate-800 border-white/5"} mr-1">${escHtml(ext)}</span>
+        ${file.size || "0"} MB
+      </div>
+    </div>
+    <button class="px-3 py-1.5 rounded-lg flex-shrink-0 ${isDeleted ? "delete-file-btn deleted" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white delete-file-btn"}" ${isDeleted ? "disabled" : ""}>
+      <i class="fas ${isDeleted ? "fa-check" : "fa-trash-alt"} mr-1"></i> ${isDeleted ? "Deleted" : "Delete"}
+    </button>
+  `;
+  
+  if (!isDeleted && filePath) {
+    fileEl.querySelector(".delete-file-btn").addEventListener("click", () => showDeleteModal(filePath));
+  }
+  
+  return fileEl;
+}
+
+function getFileTitleColor(isDeleted, isRec) {
+  if (isDeleted) return "text-rose-400";
+  if (isRec) return "text-emerald-400";
+  return "text-indigo-300";
+}
+
+function getRecommendedBadgeHtml() {
+  return `<span class="px-1.5 py-0.5 rounded bg-emerald-500 text-white font-bold ml-2 shadow-[0_0_10px_rgba(16,185,129,0.3)]"><i class="fas fa-star mr-1"></i> Recommended</span>`;
 }
 
 export function showDeleteModal(location) {

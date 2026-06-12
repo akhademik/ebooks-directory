@@ -14,6 +14,8 @@ export const state = {
   
   isShowingDuplicates: false,
   duplicateResults: null,
+  duplicatesPage: 1,
+  isCalculatingDuplicates: false,
   deletedInSession: new Set(), // Tracks deletions in current view session
   
   SUPPORTED_PREVIEW_EXTS: new Set(["pdf", "epub"]),
@@ -50,8 +52,24 @@ export function toggleDuplicates() {
   return state.isShowingDuplicates;
 }
 
+export function setShowingDuplicates(isShowing) {
+  state.isShowingDuplicates = isShowing;
+}
+
+export function resetDuplicatesPagination() {
+  state.duplicatesPage = 1;
+}
+
+export function incrementDuplicatesPage() {
+  state.duplicatesPage++;
+}
+
 export function setDuplicateResults(results) {
   state.duplicateResults = results;
+}
+
+export function setCalculatingDuplicates(isCalculating) {
+  state.isCalculatingDuplicates = isCalculating;
 }
 
 export function addDeletedInSession(path) {

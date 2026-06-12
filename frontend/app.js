@@ -15,10 +15,12 @@ import {
   setSort,
   setActiveFormat,
   toggleDuplicates,
+  setShowingDuplicates,
   setDuplicateResults,
   addDeletedInSession,
   clearDeletedInSession,
-  setFetchingBooks
+  setFetchingBooks,
+  setCalculatingDuplicates
 } from "./state.manager.js";
 
 import {
@@ -33,8 +35,11 @@ import {
   renderSyncPreview,
   updateDuplicateBadge,
   renderDuplicates,
+  renderDuplicateLoading,
   hideDeleteModal,
-  showError
+  showError,
+  updateFilters,
+  syncDuplicatesBtnState
 } from "./ui.renderer.js";
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -54,16 +59,27 @@ document.addEventListener("DOMContentLoaded", () => {
   EL.cancelDeleteBtn().addEventListener("click", hideDeleteModal);
   EL.confirmDeleteBtn().addEventListener("click", executeDelete);
 
-  EL.searchInput().addEventListener("input", resetAndRender);
-  EL.typeFilter().addEventListener("change", () => {
-    setActiveFormat(EL.typeFilter().value);
-    syncChips();
+  EL.searchInput().addEventListener("input", () => {
+    setShowingDuplicates(false);
+    syncDuplicatesBtnState();
     resetAndRender();
   });
-  EL.minSize().addEventListener("input", resetAndRender);
+  EL.typeFilter().addEventListener("change", () => {
+    setShowingDuplicates(false);
+    setActiveFormat(EL.typeFilter().value);
+    syncChips();
+    syncDuplicatesBtnState();
+    resetAndRender();
+  });
+  EL.minSize().addEventListener("input", () => {
+    setShowingDuplicates(false);
+    syncDuplicatesBtnState();
+    resetAndRender();
+  });
 
   document.querySelectorAll(".th[data-sort]").forEach((th) => {
     th.addEventListener("click", () => {
+      setShowingDuplicates(false);
       const key = th.dataset.sort;
       if (state.sortKey === key) {
         setSort(state.sortKey, state.sortDir === "asc" ? "desc" : "asc");
@@ -71,6 +87,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setSort(key, "asc");
       }
       updateSortHeaders();
+      syncDuplicatesBtnState();
       resetAndRender();
     });
   });
@@ -78,9 +95,11 @@ document.addEventListener("DOMContentLoaded", () => {
   EL.formatChips().addEventListener("click", (e) => {
     const chip = e.target.closest(".stat-chip");
     if (!chip) return;
+    setShowingDuplicates(false);
     setActiveFormat(chip.dataset.format);
     EL.typeFilter().value = state.activeFormat;
     syncChips();
+    syncDuplicatesBtnState();
     resetAndRender();
   });
 
@@ -125,6 +144,7 @@ async function fetchBooks(shouldRender = true) {
   setFetchingBooks(true);
   try {
     setBooks(await fetchBooksApi());
+    updateFilters();
     if (shouldRender && !state.isShowingDuplicates) {
       renderBooks(getFilteredBooks());
     }
@@ -263,66 +283,94 @@ function handleCancelSync() {
 
 async function toggleDuplicatesView() {
   const isShowing = toggleDuplicates();
-  const btn = EL.duplicatesBtn();
-  const activeClasses = ["bg-orange-500/20", "text-white", "border-orange-500"];
+  syncDuplicatesBtnState();
   
   if (isShowing) {
     clearDeletedInSession();
-    btn.classList.add(...activeClasses);
-    await fetchDuplicates();
+    if (state.isCalculatingDuplicates) {
+      renderDuplicateLoading();
+    } else {
+      await fetchDuplicates();
+    }
   } else {
-    btn.classList.remove(...activeClasses);
     resetAndRender();
   }
 }
 
 async function fetchDuplicates(shouldRender = true) {
+  if (state.isCalculatingDuplicates) return;
+  const btn = EL.duplicatesBtn();
+  const originalHtml = btn.innerHTML;
+
   try {
+    setCalculatingDuplicates(true);
+    if (state.isShowingDuplicates && shouldRender) {
+       btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating...`;
+       renderDuplicateLoading();
+    }
     setDuplicateResults(await fetchDuplicatesApi());
     if (state.isShowingDuplicates && shouldRender) renderDuplicates();
     updateDuplicateBadge();
   } catch (err) {
     console.error("Error fetching duplicates:", err);
+    if (state.isShowingDuplicates && shouldRender) {
+      showError(`Failed to calculate duplicates: ${err.message}`);
+    }
+  } finally {
+    setCalculatingDuplicates(false);
+    finalizeDuplicatesUI(originalHtml);
+  }
+}
+
+function finalizeDuplicatesUI(originalHtml) {
+  const btn = EL.duplicatesBtn();
+  if (state.isShowingDuplicates) {
+    const badgeHtml = `<span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>`;
+    btn.innerHTML = `<i class="fas fa-copy"></i> Duplicates ${badgeHtml}`;
+    updateDuplicateBadge();
+  } else {
+    btn.innerHTML = originalHtml;
   }
 }
 
 async function executeDelete() {
   if (!state.pendingDeletePath) return;
   const location = state.pendingDeletePath;
-  const confirmBtn = EL.confirmDeleteBtn();
+  const btn = EL.confirmDeleteBtn();
   
-  confirmBtn.disabled = true;
-  confirmBtn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Deleting...';
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Deleting...';
 
   try {
     await deleteBookFileApi(location);
-    addDeletedInSession(location);
-    
-    const elementId = `dup-${btoa(encodeURIComponent(location)).replace(/=/g, "")}`;
-    const rowEl = document.getElementById(elementId);
-    if (rowEl) {
-      rowEl.classList.add("deleted-file");
-      const titleEl = rowEl.querySelector(".text-white") || rowEl.querySelector(".text-rose-400");
-      if (titleEl) {
-        titleEl.classList.remove("text-white");
-        titleEl.classList.add("text-rose-400");
-      }
-      const btn = rowEl.querySelector(".delete-file-btn");
-      if (btn) {
-        btn.disabled = true;
-        btn.className = "px-3 py-1.5 rounded-lg delete-file-btn deleted";
-        btn.innerHTML = '<i class="fas fa-check mr-1"></i> Deleted';
-      }
-    }
-
+    handleSuccessfulDelete(location);
     hideDeleteModal();
-    await fetchBooks(false);
-    await fetchDuplicates(false);
+    await refreshDataAfterDelete();
   } catch (err) {
     console.error("Error deleting file:", err);
     alert(`Could not delete file: ${err.message}`);
   } finally {
-    confirmBtn.disabled = false;
-    confirmBtn.innerHTML = "Permanently Delete";
+    btn.disabled = false;
+    btn.innerHTML = "Permanently Delete";
   }
+}
+
+function handleSuccessfulDelete(location) {
+  addDeletedInSession(location);
+  const elementId = `dup-${btoa(encodeURIComponent(location)).replace(/=/g, "")}`;
+  const rowEl = document.getElementById(elementId);
+  if (!rowEl) return;
+
+  rowEl.classList.add("deleted-file");
+  const btn = rowEl.querySelector(".delete-file-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.className = "px-3 py-1.5 rounded-lg delete-file-btn deleted";
+    btn.innerHTML = '<i class="fas fa-check mr-1"></i> Deleted';
+  }
+}
+
+async function refreshDataAfterDelete() {
+  await fetchBooks(false);
+  await fetchDuplicates(false);
 }

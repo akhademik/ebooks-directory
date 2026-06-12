@@ -59,6 +59,7 @@ async function processBookEnrichment({ workerId, book, config }) {
 
     const absolutePath = await getValidatedAbsolutePath(libraryRoot, book.location);
     if (!absolutePath) {
+      console.warn(`⚠️ [Worker #${workerId}] File not found: ${book.location}`);
       book.goodreadsCheck = "Error";
       book._isProcessing = false;
       return;
@@ -72,6 +73,10 @@ async function processBookEnrichment({ workerId, book, config }) {
     });
 
     if (!isContextValid(scanId)) return;
+
+    // Merge metadata back into the book object to ensure state is shared
+    Object.assign(book, metadata);
+    book._isProcessing = false;
 
     logEnrichmentResult(workerId, book, metadata);
     writeQueue.enqueue(metadata);
@@ -92,10 +97,10 @@ async function startEnrichmentWorker(config) {
 
   while (isContextValid(scanId)) {
     const books = await getBooks();
-    const pending = books.filter(b => 
-      b.goodreadsCheck?.toLowerCase() === "no" || 
-      (b.goodreadsId && b.source === "Filename Parser")
-    );
+    const pending = books.filter(b => {
+      const check = (b.goodreadsCheck || "").toLowerCase();
+      return check === "no" || (b.goodreadsId && b.source === "Filename Parser");
+    });
 
     state.enrichment.total = pending.length;
 

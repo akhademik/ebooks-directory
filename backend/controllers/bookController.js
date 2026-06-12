@@ -25,6 +25,7 @@ const bookController = {
       const books = await cache.getBooks();
       res.json(books);
     } catch (error) {
+      console.error("[BookController] getAllBooks error:", error.message);
       res.status(500).json({ error: error.message });
     }
   },
@@ -48,6 +49,7 @@ const bookController = {
       
       res.json(previewData);
     } catch (error) {
+      console.error("[BookController] getBookPreview error:", error.message);
       res.status(500).json({ error: error.message });
     }
   },
@@ -72,6 +74,7 @@ const bookController = {
       res.set("Content-Type", cover.mimeType);
       res.send(cover.data);
     } catch (error) {
+      console.error("[BookController] getBookCover error:", error.message);
       res.status(500).send(error.message);
     }
   },
@@ -97,6 +100,7 @@ const bookController = {
       res.setHeader("Content-type", contentType);
       res.sendFile(absolutePath);
     } catch (error) {
+      console.error("[BookController] downloadBook error:", error.message);
       res.status(500).send(error.message);
     }
   },
@@ -115,6 +119,7 @@ const bookController = {
       const results = await detectDuplicates(books);
       res.json(results);
     } catch (error) {
+      console.error("[BookController] getDuplicates error:", error.message);
       res.status(500).json({ error: error.message });
     }
   },
