@@ -3,35 +3,69 @@ const fs = require("fs");
 const { fetchMetadata } = require("../clients/goodreadsClient");
 
 const BYTES_PER_MB = 1024 * 1024;
+const UNKNOWN_AUTHOR = "Unknown";
+
+const FILENAME_SUFFIXES = [
+  /_\d+$/,           // _10922
+  /\(\d+\)$/,        // (1)
+  /_copy$/i,         // _copy
+  /\(scan\)$/i,      // (scan)
+  /\[[^\]]{0,100}\]/g, // [EPUB]
+  /\([^)]{0,100}\)/g,  // (2023)
+];
+
+/**
+ * Strips common suffixes and "garbage" from a filename.
+ * @param {string} name Base filename without extension.
+ * @returns {string} Cleaned name.
+ */
+function stripSuffixes(name) {
+  let cleaned = name;
+  FILENAME_SUFFIXES.forEach((pattern) => {
+    cleaned = cleaned.replace(pattern, "");
+  });
+  
+  // Strip leading numbers like "01. ", "1 - ", "123 "
+  cleaned = cleaned.replace(/^\d+[\s.-]+/, "");
+  
+  // Replace underscores or multiple dots with spaces
+  return cleaned.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Extracts title and author from a cleaned filename string.
+ * Pattern: "Title - Author" or "Title - Author _ Translator"
+ * @param {string} name Cleaned filename string.
+ * @returns {Object} { title, author }
+ */
+function extractTitleAndAuthor(name) {
+  let title = name;
+  let author = UNKNOWN_AUTHOR;
+
+  if (name.includes(" - ")) {
+    const [titlePart, ...rest] = name.split(" - ");
+    title = titlePart.trim();
+    
+    // Author part might contain translator info: "Author _ Translator"
+    let authorPart = rest.join(" - ").trim();
+    if (authorPart.includes(" _ ")) {
+      [authorPart] = authorPart.split(" _ ");
+    }
+    author = authorPart.trim();
+  }
+
+  return { title, author };
+}
 
 /**
  * Parses a filename to extract title and author.
  */
 function parseFilename(filename) {
   const extension = path.extname(filename);
-  let name = path.basename(filename, extension);
-
-  // 1. Remove common garbage like [EPUB], (2023), etc.
-  name = name
-    .replace(/\[[^\]]{0,500}\]/g, "")
-    .replace(/\([^)]{0,500}\)/g, "")
-    .trim();
-
-  // 2. Strip leading numbers like "01. ", "1 - ", "123 "
-  name = name.replace(/^\d+[\s.-]+/, "").trim();
-
-  // 3. Replace underscores or multiple dots with spaces
-  name = name.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
-
-  let title = name;
-  let author = "Unknown";
-
-  // 4. Handle "Title - Author" or "Author - Title"
-  if (name.includes(" - ")) {
-    const parts = name.split(" - ");
-    title = parts[0].trim();
-    author = parts[1].trim();
-  }
+  const baseName = path.basename(filename, extension);
+  
+  const cleanedName = stripSuffixes(baseName);
+  const { title, author } = extractTitleAndAuthor(cleanedName);
 
   return { title, author, extension };
 }
