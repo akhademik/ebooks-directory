@@ -36,6 +36,7 @@ const EL = {
   previewTitle: () => document.getElementById("previewTitle"),
   previewContent: () => document.getElementById("previewContent"),
   formatChips: () => document.getElementById("formatChips"),
+  jumpToTop: () => document.getElementById("jumpToTop"),
 };
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -84,6 +85,19 @@ document.addEventListener("DOMContentLoaded", () => {
     EL.typeFilter().value = activeFormat;
     syncChips();
     resetAndRender();
+  });
+
+  // Jump to top
+  window.addEventListener("scroll", () => {
+    if (window.scrollY > 500) {
+      EL.jumpToTop().classList.remove("hidden");
+    } else {
+      EL.jumpToTop().classList.add("hidden");
+    }
+  }, { passive: true });
+
+  EL.jumpToTop().addEventListener("click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
   // Modal
@@ -251,6 +265,118 @@ function getFilteredBooks() {
   return books;
 }
 
+// ─── Render Helpers ───────────────────────────────────────────────────────────
+function updateCountLabels(filteredCount, totalCount) {
+  const totalStr = totalCount.toLocaleString();
+  const filteredStr = filteredCount.toLocaleString();
+
+  EL.resultCount().textContent = `${filteredStr} book${filteredCount !== 1 ? "s" : ""}`;
+
+  if (filteredCount === totalCount) {
+    EL.headerCount().textContent = `${totalStr} books`;
+  } else {
+    EL.headerCount().textContent = `${filteredStr} / ${totalStr} books`;
+  }
+}
+
+function getBookMetadata(book) {
+  const ext = (book.location || "").split(".").pop().toLowerCase() || "book";
+  const canPreview = SUPPORTED_PREVIEW_EXTS.has(ext);
+  const initials = getInitials(book.title);
+  const stars = renderStars(book.rating);
+  const ratingVal = book.rating && book.rating !== "N/A" ? book.rating : "";
+  const ratingCount = formatRatingCount(book.ratingCount);
+
+  let ratingText = "";
+  if (ratingVal) {
+    ratingText = ratingVal + (ratingCount ? ` (${ratingCount})` : "");
+  }
+
+  let coverUrl = "";
+  if (book.cover && book.cover.startsWith("http")) {
+    coverUrl = book.cover;
+  } else if (book.rowIndex) {
+    coverUrl = `/api/cover/${book.rowIndex}`;
+  }
+
+  return { ext, canPreview, initials, stars, ratingText, coverUrl };
+}
+
+function createBookRow(book, displayIndex) {
+  const row = document.createElement("div");
+  row.className = "book-row";
+  row.dataset.rowIndex = book.rowIndex;
+  updateRowContent({ row, book, displayIndex });
+  return row;
+}
+
+function updateRowContent({ row, book, displayIndex }) {
+  const metadata = getBookMetadata(book);
+  const newInnerHtml = generateBookRowInnerHtml({
+    book,
+    displayIndex,
+    metadata,
+    row,
+  });
+
+  // Only update if content actually changed to avoid unnecessary re-paints
+  if (row.innerHTML !== newInnerHtml) {
+    row.innerHTML = newInnerHtml;
+    attachRowEventListeners(row, book, metadata.canPreview);
+  }
+}
+
+function generateBookRowInnerHtml({ book, displayIndex, metadata, row }) {
+  const { ext, initials, stars, ratingText, coverUrl } = metadata;
+  const goodreadsUrl = book.goodreadsId ? `https://www.goodreads.com/book/show/${book.goodreadsId}` : "";
+  const titleHtml = goodreadsUrl
+    ? `<a href="${goodreadsUrl}" target="_blank" rel="noopener" title="View on Goodreads">${escHtml(book.title)}</a>`
+    : escHtml(book.title);
+
+  const imgEl = row.querySelector("img");
+  const isLoaded = imgEl && imgEl.classList.contains("loaded");
+  const imgClass = isLoaded ? "loaded" : "";
+
+  return `
+    <div class="row-idx">${displayIndex}</div>
+    <div class="book-info">
+        <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}" 
+             data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
+            ${coverUrl ? `<img src="${coverUrl}" alt="" loading="lazy" class="${imgClass}" onload="this.classList.add('loaded')" onerror="this.style.display='none'">` : ""}
+        </div>
+        <div class="book-text">
+            <div class="book-title">${titleHtml}</div>
+            <div class="book-author">
+              ${escHtml(book.author || "")}
+              ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
+            </div>
+            ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
+        </div>
+    </div>
+    <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
+    <div class="size-cell">${book.size || "—"} MB</div>
+    <div class="action-cell">
+        <button class="icon-btn ${metadata.canPreview ? "" : "disabled"}" title="${metadata.canPreview ? "Preview" : "Preview not available"}"
+                data-action="preview" ${metadata.canPreview ? "" : 'disabled aria-disabled="true"'}>
+            <i class="fas fa-eye"></i>
+        </button>
+    </div>
+    <div class="action-cell">
+        <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download"><i class="fas fa-download"></i></a>
+    </div>
+    ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
+  `;
+}
+
+function attachRowEventListeners(row, book, canPreview) {
+  const previewTriggers = row.querySelectorAll('[data-action="preview"], .cover-thumb');
+  previewTriggers.forEach((el) => {
+    el.addEventListener("click", () => {
+      if (canPreview) showPreview(book);
+    });
+  });
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 function resetAndRender() {
   currentPage = 1;
@@ -268,18 +394,7 @@ function renderBooks(books, append = false) {
   const grid = EL.bookGrid();
   const empty = EL.emptyState();
 
-  // Update counts
-  const totalStr = allBooks.length.toLocaleString();
-  const filteredStr = books.length.toLocaleString();
-  
-  EL.resultCount().textContent = `${filteredStr} book${books.length !== 1 ? "s" : ""}`;
-  
-  // Header count shows "X books" or "X / Y books" if filtered
-  if (books.length === allBooks.length) {
-    EL.headerCount().textContent = `${totalStr} books`;
-  } else {
-    EL.headerCount().textContent = `${filteredStr} / ${totalStr} books`;
-  }
+  updateCountLabels(books.length, allBooks.length);
 
   if (books.length === 0 && !append) {
     grid.innerHTML = "";
@@ -292,115 +407,44 @@ function renderBooks(books, append = false) {
   const end = currentPage * BOOKS_PER_PAGE;
   const slice = books.slice(start, end);
 
-  const fragment = document.createDocumentFragment();
-
-  slice.forEach((book, i) => {
-  const globalIdx = start + i + 1;
-  const ext = (book.location || "").split(".").pop().toLowerCase() || "book";
-  const canPreview = SUPPORTED_PREVIEW_EXTS.has(ext);
-
-  let coverUrl = "";
-  if (book.cover && book.cover.startsWith("http")) {
-    coverUrl = book.cover;
-  } else if (book.rowIndex) {
-    coverUrl = `/api/cover/${book.rowIndex}`;
-  }
-
-  const initials = getInitials(book.title);
-  const stars = renderStars(book.rating);
-
-    const ratingVal = book.rating && book.rating !== "N/A" ? book.rating : "";
-    const ratingCount = formatRatingCount(book.ratingCount);
-    
-    let ratingText = "";
-    if (ratingVal) {
-      ratingText = ratingVal + (ratingCount ? ` (${ratingCount})` : "");
-    }
-
-    const goodreadsUrl = book.goodreadsId
-      ? `https://www.goodreads.com/book/show/${book.goodreadsId}`
-      : "";
-    const titleHtml = goodreadsUrl
-      ? `<a href="${goodreadsUrl}" target="_blank" rel="noopener" title="View on Goodreads">${escHtml(book.title)}</a>`
-      : escHtml(book.title);
-
-    const row = document.createElement("div");
-    row.className = "book-row";
-
-    row.innerHTML = `
-            <div class="row-idx">${globalIdx}</div>
-
-            <div class="book-info">
-                <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}" 
-                     data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
-                    ${coverUrl ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.style.display='none'">` : ""}
-                </div>
-                <div class="book-text">
-                    <div class="book-title">${titleHtml}</div>
-                    <div class="book-author">
-                      ${escHtml(book.author || "")}
-                      ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
-                    </div>
-                    ${
-                      stars
-                        ? `<div class="book-rating">
-                        <span class="stars">${stars}</span>
-                        <span class="rating-val">${ratingText}</span>
-                    </div>`
-                        : ""
-                    }
-                </div>
-            </div>
-
-            <div>
-                <span class="format-badge badge-${ext}">${ext.toUpperCase()}</span>
-            </div>
-
-            <div class="size-cell">${book.size || "—"} MB</div>
-
-            <div class="action-cell">
-                <button class="icon-btn ${canPreview ? "" : "disabled"}"
-                        title="${canPreview ? "Preview" : "Preview not available for this format"}"
-                        data-action="preview" data-row="${book.rowIndex}"
-                        ${canPreview ? "" : 'disabled aria-disabled="true"'}>
-                    <i class="fas fa-eye"></i>
-                </button>
-            </div>
-
-            <div class="action-cell">
-                <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download" aria-label="Download ${escHtml(book.title)}">
-                    <i class="fas fa-download"></i>
-                </a>
-            </div>
-
-            ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
-        `;
-
-    // Attach preview handlers cleanly (avoids inline JSON injection issues)
-    const previewTriggers = row.querySelectorAll(
-      '[data-action="preview"], .cover-thumb',
-    );
-    previewTriggers.forEach((el) => {
-      el.addEventListener("click", () => {
-        if (canPreview) showPreview(book);
-      });
-      el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && canPreview) showPreview(book);
-      });
-    });
-
-    fragment.appendChild(row);
-  });
-
   if (append) {
+    const fragment = document.createDocumentFragment();
+    slice.forEach((book, i) => fragment.appendChild(createBookRow(book, start + i + 1)));
     grid.appendChild(fragment);
   } else {
-    grid.replaceChildren(fragment);
+    // Smart sync of the grid to prevent jitter
+    const currentRows = Array.from(grid.children);
+    
+    // 1. Remove excess rows
+    if (currentRows.length > slice.length) {
+      for (let i = slice.length; i < currentRows.length; i++) {
+        currentRows[i].remove();
+      }
+    }
+
+    // 2. Update or add rows
+    slice.forEach((book, i) => {
+      const displayIndex = start + i + 1;
+      const existingRow = currentRows[i];
+
+      if (existingRow) {
+        if (existingRow.dataset.rowIndex === String(book.rowIndex)) {
+          updateRowContent({ row: existingRow, book, displayIndex });
+        } else {
+          grid.replaceChild(createBookRow(book, displayIndex), existingRow);
+        }
+      } else {
+        grid.appendChild(createBookRow(book, displayIndex));
+      }
+    });
   }
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
+let isFetchingBooks = false;
 async function fetchBooks() {
+  if (isFetchingBooks) return;
+  isFetchingBooks = true;
   try {
     const response = await fetch("/api/books");
     allBooks = await response.json();
@@ -409,6 +453,8 @@ async function fetchBooks() {
   } catch (err) {
     console.error("Error fetching books:", err);
     showError("Could not load books. Is the server running?");
+  } finally {
+    isFetchingBooks = false;
   }
 }
 
@@ -601,7 +647,8 @@ function renderSyncPreview(data) {
   const details = EL.syncDetails();
   const confirmBtn = EL.confirmSync();
 
-  const totalChanges = data.toAdd.length + data.toDelete.length + data.duplicateRows.length;
+  const totalChanges =
+    data.toAdd.length + data.toDelete.length + data.duplicateRows.length;
 
   if (totalChanges === 0) {
     summary.innerHTML = `✨ Your library is already in sync. <br><span class="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Scope: ${escHtml(data.scanScope)}</span>`;
@@ -612,32 +659,30 @@ function renderSyncPreview(data) {
   summary.innerHTML = `Found <span class="text-white font-bold">${totalChanges}</span> changes in <span class="text-indigo-400 font-bold">${escHtml(data.scanScope)}</span>. Please review before executing.`;
   confirmBtn.classList.remove("hidden");
 
+  details.innerHTML = generateSyncDetailsHtml(data);
+}
+
+function generateSyncDetailsHtml(data) {
   let html = "";
 
   if (data.toAdd.length > 0) {
-    html += `
-      <div>
-        <div class="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mb-2 flex items-center gap-2">
-          <i class="fas fa-plus-circle"></i> To Add (${data.toAdd.length})
-        </div>
-        <div class="bg-slate-900/50 rounded-lg border border-white/5 p-3 space-y-1">
-          ${data.toAdd.slice(0, 10).map(b => `<div class="text-xs text-slate-300 truncate">${escHtml(b.title)}</div>`).join("")}
-          ${data.toAdd.length > 10 ? `<div class="text-[10px] text-slate-500 font-bold italic pt-1">... and ${data.toAdd.length - 10} more</div>` : ""}
-        </div>
-      </div>`;
+    html += generateSyncSectionHtml({
+      title: "To Add",
+      count: data.toAdd.length,
+      items: data.toAdd,
+      colorClass: "text-emerald-500",
+      iconClass: "fa-plus-circle",
+    });
   }
 
   if (data.toDelete.length > 0) {
-    html += `
-      <div>
-        <div class="text-[10px] font-bold text-rose-500 uppercase tracking-widest mb-2 flex items-center gap-2">
-          <i class="fas fa-minus-circle"></i> To Delete (${data.toDelete.length})
-        </div>
-        <div class="bg-slate-900/50 rounded-lg border border-white/5 p-3 space-y-1">
-          ${data.toDelete.slice(0, 10).map(b => `<div class="text-xs text-slate-300 truncate">${escHtml(b.title)}</div>`).join("")}
-          ${data.toDelete.length > 10 ? `<div class="text-[10px] text-slate-500 font-bold italic pt-1">... and ${data.toDelete.length - 10} more</div>` : ""}
-        </div>
-      </div>`;
+    html += generateSyncSectionHtml({
+      title: "To Delete",
+      count: data.toDelete.length,
+      items: data.toDelete,
+      colorClass: "text-rose-500",
+      iconClass: "fa-minus-circle",
+    });
   }
 
   if (data.duplicateRows.length > 0) {
@@ -648,7 +693,42 @@ function renderSyncPreview(data) {
       </div>`;
   }
 
-  details.innerHTML = html;
+  return html;
+}
+
+function generateSyncSectionHtml({
+  title,
+  count,
+  items,
+  colorClass,
+  iconClass,
+}) {
+  const MAX_VISIBLE_ITEMS = 10;
+  const visibleItems = items.slice(0, MAX_VISIBLE_ITEMS);
+  const remainingCount = items.length - MAX_VISIBLE_ITEMS;
+
+  const itemsHtml = visibleItems
+    .map(
+      (item) =>
+        `<div class="text-xs text-slate-300 truncate">${escHtml(item.title)}</div>`,
+    )
+    .join("");
+
+  const footerHtml =
+    remainingCount > 0
+      ? `<div class="text-[10px] text-slate-500 font-bold italic pt-1">... and ${remainingCount} more</div>`
+      : "";
+
+  return `
+    <div>
+      <div class="text-[10px] font-bold ${colorClass} uppercase tracking-widest mb-2 flex items-center gap-2">
+        <i class="fas ${iconClass}"></i> ${title} (${count})
+      </div>
+      <div class="bg-slate-900/50 rounded-lg border border-white/5 p-3 space-y-1">
+        ${itemsHtml}
+        ${footerHtml}
+      </div>
+    </div>`;
 }
 
 async function handleConfirmSync() {
