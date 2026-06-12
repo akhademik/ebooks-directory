@@ -214,8 +214,8 @@ select.filter-input {
 }
 
 .cover-thumb {
-  width: 32px;
-  height: 44px;
+  width: 44px;
+  height: 64px;
   border-radius: 4px;
   background: #1e293b;
   border: 1px solid var(--border);
@@ -290,6 +290,15 @@ select.filter-input {
   overflow: hidden;
   text-overflow: ellipsis;
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.book-year {
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 0.9em;
 }
 
 .book-rating {

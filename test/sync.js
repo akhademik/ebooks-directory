@@ -1,72 +1,42 @@
 const fs = require("fs").promises;
 const path = require("path");
-// Load .env from the root or backend directory if needed
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 require("dotenv").config({ path: path.resolve(__dirname, "../backend/.env") });
 
-const { getBasicInfo } = require("../backend/scanner");
+const { getBasicInfo } = require("../backend/services/scannerService");
 const {
-  getAllBooks,
-  addOrUpdateBook,
-  addBooks, // batch insert — preferred when available
+  fetchAllBooks,
+  saveBook,
+  batchAddBooks,
   deleteBooks,
-  setupHeaders,
-} = require("../backend/sheets");
+  setupSpreadsheetHeaders,
+} = require("../backend/clients/googleSheetsClient");
 
-// --dry-run flag: print what would happen without making any changes
 const DRY_RUN = process.argv.includes("--dry-run");
 
-// The Library Root is the base directory for all relative paths in the Google Sheet.
-// By default, it's the BOOKS_PATH from your .env file.
-// Normalize paths to use forward slashes, remove trailing slashes,
-// apply NFC Unicode normalization, and lowercase for consistent comparison.
 function normalizePath(p) {
   if (!p) return "";
-  return p.replace(/\\/g, "/").replace(/\/+$/, "").normalize("NFC");
+  return p.replace(/\\/g, "/").replace(/\/$/, "").normalize("NFC");
 }
 
 const LIBRARY_ROOT = normalizePath(process.env.BOOKS_PATH);
 const SCAN_PATH = normalizePath(process.env.SCAN_PATH || LIBRARY_ROOT);
-
-// Calculate the relative path of the scan scope from the library root
-// Example: Root = /Ebooks, Scan = /Ebooks/FolderA => REL_SCAN_SCOPE = FolderA
 const REL_SCAN_SCOPE = normalizePath(path.relative(LIBRARY_ROOT, SCAN_PATH));
-
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SUPPORTED_EXTENSIONS = [".pdf", ".epub", ".mobi", ".azw", ".azw3"];
 
-/**
- * Checks if a book's location is within our current scan scope.
- */
 function isLocationInScope(bookLocation) {
   const normalizedLoc = normalizePath(bookLocation);
   const normalizedScope = normalizePath(REL_SCAN_SCOPE);
-
-  // If scope is empty or '.', we are scanning the entire library root
-  if (!normalizedScope || normalizedScope === ".") {
-    return true;
-  }
-
-  // A location is in scope ONLY if it starts with the scope folder.
-  // We add a trailing slash to the scope to ensure we match 'FolderA/file' but not 'FolderA_Special/file'
-  const scopeWithSlash = normalizedScope.endsWith("/")
-    ? normalizedScope
-    : normalizedScope + "/";
-
-  const inScope =
-    normalizedLoc.startsWith(scopeWithSlash) ||
-    normalizedLoc === normalizedScope;
-
-  return inScope;
+  if (!normalizedScope || normalizedScope === ".") return true;
+  
+  const scopeWithSlash = normalizedScope.endsWith("/") ? normalizedScope : normalizedScope + "/";
+  return normalizedLoc.startsWith(scopeWithSlash) || normalizedLoc === normalizedScope;
 }
 
-/**
- * Recursively scans a directory for ebook files.
- */
 async function scanDirectory(dir, foundPaths = new Set()) {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-
     for (const entry of entries) {
       const res = path.resolve(dir, entry.name);
       if (entry.isDirectory()) {
@@ -74,9 +44,7 @@ async function scanDirectory(dir, foundPaths = new Set()) {
       } else {
         const ext = path.extname(entry.name).toLowerCase();
         if (SUPPORTED_EXTENSIONS.includes(ext)) {
-          // ALWAYS calculate relative path from LIBRARY_ROOT to match the sheet
-          const relativePathFromRoot = path.relative(LIBRARY_ROOT, res);
-          foundPaths.add(normalizePath(relativePathFromRoot));
+          foundPaths.add(normalizePath(path.relative(LIBRARY_ROOT, res)));
         }
       }
     }
@@ -86,229 +54,111 @@ async function scanDirectory(dir, foundPaths = new Set()) {
   return foundPaths;
 }
 
-/**
- * Synchronizes the Google Sheet with the files on the NAS.
- */
+async function processDuplicates(sheetBooks) {
+  const sheetBooksMap = new Map();
+  const duplicateRows = [];
+
+  sheetBooks.forEach((b) => {
+    const normLoc = normalizePath(b.location);
+    if (sheetBooksMap.has(normLoc)) {
+      console.log(`🔁 [Sync] DUPLICATE found: "${b.title}" at row ${b.rowIndex} (path: ${normLoc})`);
+      duplicateRows.push(b.rowIndex);
+    } else {
+      sheetBooksMap.set(normLoc, b);
+    }
+  });
+
+  if (duplicateRows.length > 0) {
+    console.log(`\n🧹 [Sync] Found ${duplicateRows.length} duplicate row(s) — ${DRY_RUN ? "[DRY-RUN] would remove them." : "removing them first..."}`);
+    if (!DRY_RUN) {
+      await deleteBooks(SHEET_ID, duplicateRows);
+      console.log(`✅ [Sync] Duplicates removed.`);
+      console.log(`🔄 [Sync] Re-reading Sheet to get fresh row indices...`);
+      const freshBooks = await fetchAllBooks(SHEET_ID);
+      sheetBooksMap.clear();
+      freshBooks.forEach((b) => sheetBooksMap.set(normalizePath(b.location), b));
+    }
+  }
+  return { sheetBooksMap, duplicateRows };
+}
+
+async function processDeletions(sheetBooksMap, nasFilesSet) {
+  const rowsToDelete = [];
+  let outOfScopeCount = 0;
+
+  for (const [location, book] of sheetBooksMap.entries()) {
+    if (isLocationInScope(location)) {
+      if (!nasFilesSet.has(location)) {
+        console.log(`🗑️ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD DELETE" : "DELETE"}: "${book.title}" (Path: ${location})`);
+        rowsToDelete.push(book.rowIndex);
+      }
+    } else {
+      outOfScopeCount++;
+    }
+  }
+
+  if (rowsToDelete.length > 0 && !DRY_RUN) {
+    if (rowsToDelete.length > 100) {
+      console.log(`\n⚠️  WARNING: You are about to delete ${rowsToDelete.length} books. Waiting 10 seconds...`);
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+    }
+    await deleteBooks(SHEET_ID, rowsToDelete);
+    console.log(`✅ [Sync] Successfully deleted ${rowsToDelete.length} books.`);
+  }
+  return { rowsToDelete, outOfScopeCount };
+}
+
+async function processAdditions(sheetBooksMap, nasFilesSet) {
+  const booksToAdd = [];
+  for (const normalizedPathFromRoot of nasFilesSet) {
+    if (!sheetBooksMap.has(normalizedPathFromRoot)) {
+      const fileName = path.basename(normalizedPathFromRoot);
+      const absolutePath = path.resolve(process.env.BOOKS_PATH, normalizedPathFromRoot);
+      
+      console.log(`➕ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD ADD" : "ADD"}: ${fileName} (Path: ${normalizedPathFromRoot})`);
+      if (!DRY_RUN) {
+        booksToAdd.push(getBasicInfo(fileName, normalizedPathFromRoot, absolutePath));
+      }
+    }
+  }
+
+  if (!DRY_RUN && booksToAdd.length > 0) {
+    if (typeof batchAddBooks === "function") {
+      await batchAddBooks(SHEET_ID, booksToAdd);
+    } else {
+      for (let i = 0; i < booksToAdd.length; i++) {
+        await saveBook(SHEET_ID, booksToAdd[i]);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      }
+    }
+  }
+  return booksToAdd.length;
+}
+
 async function syncNasWithSheet() {
   console.log(`\n🔄 [Sync] Starting synchronization...`);
-  if (DRY_RUN) {
-    console.log(
-      `🧪 [Sync] DRY-RUN MODE — no changes will be made to the Sheet.\n`,
-    );
-  }
-
   if (!LIBRARY_ROOT || !SHEET_ID) {
-    console.error(
-      "❌ Error: BOOKS_PATH or GOOGLE_SHEET_ID not found in environment variables.",
-    );
-    return;
+    return console.error("❌ Error: BOOKS_PATH or GOOGLE_SHEET_ID not found.");
   }
-
-  console.log(`🏠 Library Root:  ${LIBRARY_ROOT}`);
-  console.log(`🔍 Scan Path:     ${SCAN_PATH}`);
-  console.log(`📊 Sheet ID:      ${SHEET_ID}`);
 
   try {
-    if (!DRY_RUN) {
-      await setupHeaders(SHEET_ID);
-    }
+    if (!DRY_RUN) await setupSpreadsheetHeaders(SHEET_ID);
 
-    // 1. Get current files on NAS (recursive)
-    console.log(`🔍 [Sync] Scanning NAS for all files in scope...`);
     const nasFilesSet = await scanDirectory(SCAN_PATH);
-    console.log(`✅ [Sync] Found ${nasFilesSet.size} total files on NAS.`);
+    const sheetBooks = await fetchAllBooks(SHEET_ID);
 
-    // 2. Get current entries in Sheet
-    console.log(`🔍 [Sync] Reading Google Sheet...`);
-    const sheetBooks = await getAllBooks(SHEET_ID);
-    console.log(`✅ [Sync] Found ${sheetBooks.length} total entries in Sheet.`);
+    const { sheetBooksMap, duplicateRows } = await processDuplicates(sheetBooks);
+    const { rowsToDelete, outOfScopeCount } = await processDeletions(sheetBooksMap, nasFilesSet);
+    const addedCount = await processAdditions(sheetBooksMap, nasFilesSet);
 
-    // 4. Build the sheet map — detect and collect duplicate rows along the way
-    const sheetBooksMap = new Map();
-    const duplicateRows = [];
-
-    sheetBooks.forEach((b) => {
-      const normLoc = normalizePath(b.location);
-      if (sheetBooksMap.has(normLoc)) {
-        console.log(
-          `🔁 [Sync] DUPLICATE found: "${b.title}" at row ${b.rowIndex} (path: ${normLoc})`,
-        );
-        duplicateRows.push(b.rowIndex);
-      } else {
-        sheetBooksMap.set(normLoc, b);
-      }
-    });
-
-    // 5. Purge existing duplicates first, before any other changes
-    if (duplicateRows.length > 0) {
-      console.log(
-        `\n🧹 [Sync] Found ${duplicateRows.length} duplicate row(s) — ${DRY_RUN ? "[DRY-RUN] would remove them." : "removing them first..."}`,
-      );
-      if (!DRY_RUN) {
-        await deleteBooks(SHEET_ID, duplicateRows);
-        console.log(`✅ [Sync] Duplicates removed.`);
-
-        // Re-fetch the sheet so rowIndex values reflect the post-deletion state.
-        // Deleting rows shifts every subsequent row up; stale indices would cause
-        // Step 6 to delete the wrong rows.
-        console.log(`🔄 [Sync] Re-reading Sheet to get fresh row indices...`);
-        const freshBooks = await getAllBooks(SHEET_ID);
-        sheetBooksMap.clear();
-        freshBooks.forEach((b) => {
-          sheetBooksMap.set(normalizePath(b.location), b);
-        });
-        console.log(`✅ [Sync] Sheet re-read. ${sheetBooksMap.size} entries.`);
-      }
-    } else {
-      console.log(`✅ [Sync] No duplicates found in Sheet.`);
-    }
-
-    // 6. Identify books to delete (in scope but missing from NAS)
-    const rowsToDelete = [];
-
-    console.log(`\n🕵️ [Sync] Checking for deletions...`);
-    let outOfScopeCount = 0;
-    for (const [location, book] of sheetBooksMap.entries()) {
-      if (isLocationInScope(location)) {
-        // If it's in our scan scope but NOT on the disk anymore, mark for deletion.
-        if (!nasFilesSet.has(location)) {
-          // Find similar paths on NAS to help diagnose rename vs real deletion
-          const similar = [...nasFilesSet].filter((p) =>
-            p.includes(location.split("/").pop().substring(0, 15)),
-          );
-          console.log(
-            `🗑️ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD DELETE" : "DELETE"}: "${book.title}"`,
-          );
-          console.log(`   - Sheet path : ${location}`);
-          if (similar.length > 0) {
-            console.log(`   - Similar on NAS (possible rename?):`);
-            similar.slice(0, 3).forEach((s) => console.log(`     → ${s}`));
-          } else {
-            console.log(
-              `   - No similar file found on NAS (likely truly deleted)`,
-            );
-          }
-          rowsToDelete.push(book.rowIndex);
-        }
-      } else {
-        // This book belongs to a folder we ARE NOT scanning right now
-        outOfScopeCount++;
-      }
-    }
-
-    console.log(
-      `ℹ️ [Sync] Total in Sheet (after dedup): ${sheetBooksMap.size}`,
-    );
-    console.log(`ℹ️ [Sync] Out of Scope (Safe): ${outOfScopeCount}`);
-    console.log(`ℹ️ [Sync] Marked for Deletion: ${rowsToDelete.length}`);
-
-    if (rowsToDelete.length > 0 && !DRY_RUN) {
-      // Safety confirmation for large deletions
-      if (rowsToDelete.length > 100) {
-        console.log(
-          `\n⚠️  WARNING: You are about to delete ${rowsToDelete.length} books.`,
-        );
-        console.log(
-          `   This is a large number. Please double check the "Path" examples above.`,
-        );
-        console.log(`   If this looks wrong, stop the script NOW (Ctrl+C).`);
-        console.log(`   Waiting 10 seconds before proceeding...`);
-        await new Promise((resolve) => setTimeout(resolve, 10000));
-      }
-
-      console.log(`📤 [Sync] Deleting missing entries from Sheet...`);
-      await deleteBooks(SHEET_ID, rowsToDelete);
-      console.log(
-        `✅ [Sync] Successfully deleted ${rowsToDelete.length} books.`,
-      );
-    } else if (rowsToDelete.length === 0) {
-      console.log(`✅ [Sync] No books to delete in this scope.`);
-    }
-
-    // 7. Identify books to add (on NAS but not in Sheet)
-    console.log(`\n🕵️ [Sync] Checking for new books to add...`);
-    let addedCount = 0;
-    const booksToAdd = [];
-
-    for (const normalizedPathFromRoot of nasFilesSet) {
-      if (!sheetBooksMap.has(normalizedPathFromRoot)) {
-        const fileName = path.basename(normalizedPathFromRoot);
-        // Resolve absolute path using original-case LIBRARY_ROOT
-        const absolutePath = path.resolve(
-          process.env.BOOKS_PATH,
-          normalizedPathFromRoot,
-        );
-
-        console.log(
-          `➕ [Sync] ${DRY_RUN ? "[DRY-RUN] WOULD ADD" : "ADD"}: ${fileName}`,
-        );
-        console.log(`   - Path: ${normalizedPathFromRoot}`);
-
-        if (!DRY_RUN) {
-          const basicInfo = getBasicInfo(
-            fileName,
-            normalizedPathFromRoot,
-            absolutePath,
-          );
-          booksToAdd.push(basicInfo);
-        }
-        addedCount++;
-      }
-    }
-
-    // Write all new books — batch insert preferred (1 API call), sequential fallback
-    if (!DRY_RUN && booksToAdd.length > 0) {
-      if (typeof addBooks === "function") {
-        // Ideal path: one batch append to the sheet
-        console.log(`📤 [Sync] Batch-inserting ${booksToAdd.length} books...`);
-        await addBooks(SHEET_ID, booksToAdd);
-      } else {
-        // Fallback: sequential with rate-limit delay (1 req/sec ≈ safe under 60/min)
-        console.log(
-          `📤 [Sync] Adding ${booksToAdd.length} books (rate-limited sequential)...`,
-        );
-        for (let i = 0; i < booksToAdd.length; i++) {
-          await addOrUpdateBook(SHEET_ID, booksToAdd[i]);
-          if ((i + 1) % 10 === 0) {
-            console.log(`   ... ${i + 1}/${booksToAdd.length} done`);
-          }
-          // 1.1 s delay keeps read+write requests well under the 60/min quota
-          await new Promise((resolve) => setTimeout(resolve, 1100));
-        }
-      }
-    }
-
-    if (addedCount > 0) {
-      console.log(
-        `✅ [Sync] ${DRY_RUN ? "Would add" : "Added"} ${addedCount} new books.`,
-      );
-    } else {
-      console.log(`✅ [Sync] No new books to add.`);
-    }
-
-    console.log(
-      `\n✨ [Sync] ${DRY_RUN ? "Dry-run complete!" : "Synchronization complete!"}`,
-    );
-    console.log(`📋 [Sync] Summary:`);
-    console.log(
-      `   - Duplicates ${DRY_RUN ? "found" : "removed"}  : ${duplicateRows.length}`,
-    );
-    console.log(
-      `   - Entries ${DRY_RUN ? "that would be deleted" : "deleted"}  : ${rowsToDelete.length}`,
-    );
-    console.log(
-      `   - Books ${DRY_RUN ? "that would be added" : "added"}      : ${addedCount}`,
-    );
-    if (DRY_RUN) {
-      console.log(
-        `\n   ✋ No changes were made. Run without --dry-run to apply.`,
-      );
-    }
+    console.log(`\n✨ [Sync] Summary:`);
+    console.log(`   - Duplicates ${DRY_RUN ? "found" : "removed"}: ${duplicateRows.length}`);
+    console.log(`   - Entries ${DRY_RUN ? "that would be deleted" : "deleted"}: ${rowsToDelete.length}`);
+    console.log(`   - Out of scope entries: ${outOfScopeCount}`);
+    console.log(`   - Books ${DRY_RUN ? "that would be added" : "added"}: ${addedCount}`);
   } catch (error) {
     console.error(`❌ [Sync] Fatal Error:`, error.message);
-    console.error(error.stack);
   }
 }
 
-// Run the sync
 syncNasWithSheet();

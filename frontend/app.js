@@ -19,12 +19,18 @@ const EL = {
   searchInput: () => document.getElementById("searchInput"),
   typeFilter: () => document.getElementById("typeFilter"),
   minSize: () => document.getElementById("minSize"),
+  syncBtn: () => document.getElementById("syncBtn"),
   scanBtn: () => document.getElementById("scanBtn"),
   statusArea: () => document.getElementById("statusArea"),
   statusText: () => document.getElementById("statusText"),
   scanProgress: () => document.getElementById("scanProgress"),
   progressBar: () => document.getElementById("progressBar"),
   previewModal: () => document.getElementById("previewModal"),
+  syncModal: () => document.getElementById("syncModal"),
+  syncSummary: () => document.getElementById("syncSummary"),
+  syncDetails: () => document.getElementById("syncDetails"),
+  cancelSync: () => document.getElementById("cancelSync"),
+  confirmSync: () => document.getElementById("confirmSync"),
   modalOverlay: () => document.getElementById("modalOverlay"),
   closeModal: () => document.getElementById("closeModal"),
   previewTitle: () => document.getElementById("previewTitle"),
@@ -42,6 +48,9 @@ document.addEventListener("DOMContentLoaded", () => {
   startScan(false);
 
   EL.scanBtn().addEventListener("click", () => startScan(true));
+  EL.syncBtn().addEventListener("click", handleSyncClick);
+  EL.confirmSync().addEventListener("click", handleConfirmSync);
+  EL.cancelSync().addEventListener("click", handleCancelSync);
 
   EL.searchInput().addEventListener("input", resetAndRender);
   EL.typeFilter().addEventListener("change", () => {
@@ -328,7 +337,10 @@ function renderBooks(books, append = false) {
                 </div>
                 <div class="book-text">
                     <div class="book-title">${titleHtml}</div>
-                    <div class="book-author">${escHtml(book.author || "")}</div>
+                    <div class="book-author">
+                      ${escHtml(book.author || "")}
+                      ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
+                    </div>
                     ${
                       stars
                         ? `<div class="book-rating">
@@ -513,9 +525,13 @@ async function startScan(force = false, isResuming = false) {
     try {
       const res = await fetch("/api/scan/status");
       const data = await res.json();
-      const { isScanning, isEnriching, results, enrichment } = data;
+      const { isScanning, isEnriching, isSyncing, results, enrichment } = data;
 
-      if (isScanning) {
+      if (isSyncing) {
+        statusText.textContent = "Syncing library...";
+        progressBar.style.width = "50%"; // Indeterminate-ish
+        scanProgress.textContent = "";
+      } else if (isScanning) {
         const pct = results.total
           ? Math.round((results.processed / results.total) * 100)
           : 0;
@@ -550,6 +566,118 @@ async function startScan(force = false, isResuming = false) {
       console.error("Poll error:", err);
     }
   }, 2000);
+}
+
+// ─── Sync Workflow ───────────────────────────────────────────────────────────
+async function handleSyncClick() {
+  const modal = EL.syncModal();
+  const summary = EL.syncSummary();
+  const details = EL.syncDetails();
+  const confirmBtn = EL.confirmSync();
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+  summary.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-2"></i> Scanning file system and comparing with Google Sheets...`;
+  details.innerHTML = "";
+  confirmBtn.classList.add("hidden");
+
+  try {
+    // 1. Stop any active processes first
+    await fetch("/api/sync/stop", { method: "POST" });
+    
+    // 2. Get the preview
+    const res = await fetch("/api/sync/preview");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    renderSyncPreview(data);
+  } catch (err) {
+    summary.innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
+  }
+}
+
+function renderSyncPreview(data) {
+  const summary = EL.syncSummary();
+  const details = EL.syncDetails();
+  const confirmBtn = EL.confirmSync();
+
+  const totalChanges = data.toAdd.length + data.toDelete.length + data.duplicateRows.length;
+
+  if (totalChanges === 0) {
+    summary.innerHTML = `✨ Your library is already in sync. <br><span class="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Scope: ${escHtml(data.scanScope)}</span>`;
+    confirmBtn.classList.add("hidden");
+    return;
+  }
+
+  summary.innerHTML = `Found <span class="text-white font-bold">${totalChanges}</span> changes in <span class="text-indigo-400 font-bold">${escHtml(data.scanScope)}</span>. Please review before executing.`;
+  confirmBtn.classList.remove("hidden");
+
+  let html = "";
+
+  if (data.toAdd.length > 0) {
+    html += `
+      <div>
+        <div class="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+          <i class="fas fa-plus-circle"></i> To Add (${data.toAdd.length})
+        </div>
+        <div class="bg-slate-900/50 rounded-lg border border-white/5 p-3 space-y-1">
+          ${data.toAdd.slice(0, 10).map(b => `<div class="text-xs text-slate-300 truncate">${escHtml(b.title)}</div>`).join("")}
+          ${data.toAdd.length > 10 ? `<div class="text-[10px] text-slate-500 font-bold italic pt-1">... and ${data.toAdd.length - 10} more</div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  if (data.toDelete.length > 0) {
+    html += `
+      <div>
+        <div class="text-[10px] font-bold text-rose-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+          <i class="fas fa-minus-circle"></i> To Delete (${data.toDelete.length})
+        </div>
+        <div class="bg-slate-900/50 rounded-lg border border-white/5 p-3 space-y-1">
+          ${data.toDelete.slice(0, 10).map(b => `<div class="text-xs text-slate-300 truncate">${escHtml(b.title)}</div>`).join("")}
+          ${data.toDelete.length > 10 ? `<div class="text-[10px] text-slate-500 font-bold italic pt-1">... and ${data.toDelete.length - 10} more</div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  if (data.duplicateRows.length > 0) {
+    html += `
+      <div class="text-xs text-amber-400 font-bold bg-amber-400/10 border border-amber-400/20 p-3 rounded-lg flex items-center gap-3">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span>Found ${data.duplicateRows.length} duplicate entries in the Sheet that will be cleaned up.</span>
+      </div>`;
+  }
+
+  details.innerHTML = html;
+}
+
+async function handleConfirmSync() {
+  const confirmBtn = EL.confirmSync();
+  const summary = EL.syncSummary();
+  
+  confirmBtn.disabled = true;
+  confirmBtn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-2"></i> Executing...`;
+  
+  try {
+    const res = await fetch("/api/sync/execute", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    
+    // Close modal and start a normal scan (which will refresh UI and start enrichment)
+    handleCancelSync();
+    startScan(true); 
+  } catch (err) {
+    summary.innerHTML = `<span class="text-red-400">Execution Error: ${err.message}</span>`;
+    confirmBtn.disabled = false;
+    confirmBtn.innerHTML = `Execute Sync`;
+  }
+}
+
+function handleCancelSync() {
+  const modal = EL.syncModal();
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+  // Restart status polling if needed
+  checkScanStatus();
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────

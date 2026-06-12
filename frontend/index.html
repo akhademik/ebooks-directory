@@ -81,6 +81,15 @@
           <div class="w-px h-5 bg-slate-700"></div>
 
           <button
+            id="syncBtn"
+            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-indigo-500/30 text-indigo-400 hover:text-white hover:border-indigo-500 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
+            title="Sync file system with Google Sheets"
+          >
+            <i class="fas fa-sync-alt"></i>
+            Sync Library
+          </button>
+
+          <button
             id="scanBtn"
             class="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
             title="Force a full scan and bypass cache"
@@ -196,6 +205,43 @@
           </button>
         </div>
         <div id="previewContent"></div>
+      </div>
+    </div>
+
+      </div>
+    </div>
+
+    <!-- Sync Confirmation Modal -->
+    <div
+      id="syncModal"
+      class="fixed inset-0 z-[100] items-center justify-center p-4 hidden"
+    >
+      <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
+      <div class="modal-inner max-w-2xl relative">
+        <div class="modal-header">
+          <div class="modal-title">
+            <div class="modal-icon"><i class="fas fa-sync-alt"></i></div>
+            <span>Sync Library Preview</span>
+          </div>
+        </div>
+        <div class="p-6">
+          <p class="text-sm text-slate-400 mb-6" id="syncSummary">
+            Scanning file system...
+          </p>
+          
+          <div id="syncDetails" class="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            <!-- Added/Deleted lists -->
+          </div>
+
+          <div class="flex items-center justify-end gap-3 mt-8 pt-6 border-t border-white/5">
+            <button id="cancelSync" class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
+              Cancel
+            </button>
+            <button id="confirmSync" class="hidden px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-indigo-500/20">
+              Execute Sync
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

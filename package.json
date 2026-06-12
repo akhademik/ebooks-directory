@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node test/sync.js --dry-run"
   },
   "dependencies": {
     "axios": "^1.17.0",
