@@ -5,7 +5,7 @@ const mime = require("mime-types");
 const { getValidatedAbsolutePath } = require("../services/enrichmentService");
 const { getPreview } = require("../utils/preview");
 const { extractEmbeddedCover } = require("../utils/cover");
-const { detectDuplicates, loadCachedDuplicates, clearDuplicateCache } = require("../services/duplicateDetector.service");
+const { detectDuplicates, loadCachedDuplicates } = require("../services/duplicateDetector.service");
 const writeQueue = require("../services/writeQueue.service");
 
 const BOOKS_PATH = process.env.BOOKS_PATH;
@@ -108,15 +108,22 @@ const bookController = {
   /**
    * Detects duplicate books in the cache.
    */
-  async getDuplicates(req, res, cache) {
+  async getDuplicates(req, res, cache, state) {
     try {
+      // Reset progress IMMEDIATELY before any async work
+      state.duplicateProgress = { total: 0, current: 0, percent: 0 };
+
       const cachedResults = await loadCachedDuplicates();
       if (cachedResults) {
         return res.json(cachedResults);
       }
 
       const books = await cache.getBooks();
-      const results = await detectDuplicates(books);
+      
+      const results = await detectDuplicates(books, (progress) => {
+        state.duplicateProgress = progress;
+      });
+      
       res.json(results);
     } catch (error) {
       console.error("[BookController] getDuplicates error:", error.message);
@@ -152,9 +159,65 @@ const bookController = {
           writeQueue.enqueueDelete(book.rowIndex);
         }
 
-        // 4. Save updated JSON cache and clear duplicate cache
+        // 4. Save updated JSON cache
         await cache.saveBooks();
-        await clearDuplicateCache();
+        
+        // 5. Update duplicate cache IN-PLACE
+        const { 
+          loadCachedDuplicates, 
+          duplicateCache, 
+          calculateWastedBytes, 
+          recommendFile 
+        } = require("../services/duplicateDetector.service");
+
+        const dupResults = await loadCachedDuplicates();
+        if (dupResults) {
+          let modified = false;
+          const confTypes = ["confirmed", "probable", "possible"];
+          
+          confTypes.forEach((type) => {
+            if (!dupResults[type]) return;
+            
+            for (let i = 0; i < dupResults[type].length; i++) {
+              const group = dupResults[type][i];
+              const fileIndex = group.files.findIndex((f) => f.path === location);
+              
+              if (fileIndex !== -1) {
+                group.files.splice(fileIndex, 1);
+                modified = true;
+                
+                if (group.files.length <= 1) {
+                  dupResults[type].splice(i, 1);
+                  i--;
+                } else {
+                  // Recalculate recommendation and update wasted bytes for this specific group
+                  const recommendedIdx = recommendFile(group.files);
+                  group.files.forEach((f, idx) => {
+                    f.recommended = (idx === recommendedIdx);
+                  });
+                  group.recommendedFile = group.files[recommendedIdx].path;
+                }
+              }
+            }
+          });
+
+          if (modified) {
+            const allGroups = [
+              ...(dupResults.confirmed || []), 
+              ...(dupResults.probable || []), 
+              ...(dupResults.possible || [])
+            ];
+            dupResults.stats.totalGroups = allGroups.length;
+            
+            // Recalculate total wasted bytes precisely
+            const BYTES_PER_MB = 1024 * 1024;
+            const totalWastedBytes = allGroups.reduce((acc, g) => acc + calculateWastedBytes(g.files), 0);
+            dupResults.stats.totalWastedBytes = totalWastedBytes;
+            dupResults.stats.totalWastedFormatted = `${(totalWastedBytes / BYTES_PER_MB).toFixed(2)} MB`;
+            
+            await duplicateCache.save(dupResults);
+          }
+        }
       }
 
       res.json({ message: "Book deleted successfully" });

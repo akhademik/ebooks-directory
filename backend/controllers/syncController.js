@@ -130,6 +130,7 @@ const syncController = {
       isSyncing: state.isSyncing,
       results: state.scanResults,
       enrichment: state.enrichment,
+      duplicateProgress: state.duplicateProgress,
     });
   }
 };

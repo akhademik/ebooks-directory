@@ -282,7 +282,7 @@ export function syncDuplicatesBtnState() {
   if (state.isShowingDuplicates) {
     btn.classList.add(...activeClasses);
     if (state.isCalculatingDuplicates) {
-      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating...`;
+      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating ${state.duplicatePercent}%`;
     }
   } else {
     btn.classList.remove(...activeClasses);
@@ -582,7 +582,7 @@ export function renderDuplicateLoading() {
     grid.innerHTML = `
       <div style="grid-column:1/-1;text-align:center;padding:120px 0;color:#f97316;">
           <i class="fas fa-circle-notch fa-spin" style="font-size:32px;margin-bottom:16px;opacity:0.8;"></i>
-          <p style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;">Analyzing library for duplicates...</p>
+          <p style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;">Analyzing library for duplicates... ${state.duplicatePercent}%</p>
           <p style="font-size:10px;color:#64748b;margin-top:8px;">This might take a few seconds on the first run.</p>
       </div>
     `;

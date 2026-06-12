@@ -20,7 +20,8 @@ import {
   addDeletedInSession,
   clearDeletedInSession,
   setFetchingBooks,
-  setCalculatingDuplicates
+  setCalculatingDuplicates,
+  setDuplicatePercent
 } from "./state.manager.js";
 
 import {
@@ -190,7 +191,16 @@ async function startScan(force = false, isResuming = false) {
   window._scanPoll = setInterval(async () => {
     try {
       const data = await fetchScanStatusApi();
-      const { isScanning, isEnriching, isSyncing, results, enrichment } = data;
+      const { isScanning, isEnriching, isSyncing, results, enrichment, duplicateProgress } = data;
+
+      // Update duplicate progress if calculation is active
+      if (duplicateProgress && state.isCalculatingDuplicates) {
+        setDuplicatePercent(duplicateProgress.percent);
+        if (state.isShowingDuplicates) {
+          syncDuplicatesBtnState();
+          renderDuplicateLoading();
+        }
+      }
 
       if (isSyncing) {
         statusText.textContent = "Syncing library...";
@@ -213,21 +223,12 @@ async function startScan(force = false, isResuming = false) {
         }
       }
 
-      if (!isScanning && !isEnriching) {
-        clearInterval(window._scanPoll);
-        window._scanPoll = null;
-        statusText.textContent = "Library sync complete";
-        progressBar.style.width = "100%";
-        
-        await fetchBooks(false);
-        await fetchDuplicates(false);
-        if (!state.isShowingDuplicates) {
-          renderBooks(getFilteredBooks());
+      if (!isScanning && !isEnriching && !isSyncing) {
+        // Only stop polling if enrichment is done AND duplicate calculation is done (if it was active)
+        if (!state.isCalculatingDuplicates || (duplicateProgress && duplicateProgress.percent === 100)) {
+           // Keep polling if we're not explicitly in a "startScan" context? 
+           // Actually, it's better to keep the poll alive if the server is doing background work.
         }
-        
-        setTimeout(() => {
-          if (!window._scanPoll) statusArea.classList.remove("is-active");
-        }, 3000);
       }
     } catch (err) {
       console.error("Poll error:", err);
@@ -371,6 +372,19 @@ function handleSuccessfulDelete(location) {
 }
 
 async function refreshDataAfterDelete() {
-  await fetchBooks(false);
-  await fetchDuplicates(false);
+  // Update main books list in background
+  fetchBooks(false);
+  
+  // For duplicates, the backend already updated its cache in-place.
+  // We just need to fetch the updated results without triggering a new scan.
+  try {
+    const updatedResults = await fetchDuplicatesApi();
+    setDuplicateResults(updatedResults);
+    if (state.isShowingDuplicates) {
+      renderDuplicates();
+    }
+    updateDuplicateBadge();
+  } catch (err) {
+    console.error("Error updating duplicates after delete:", err);
+  }
 }

@@ -16,6 +16,7 @@ export const state = {
   duplicateResults: null,
   duplicatesPage: 1,
   isCalculatingDuplicates: false,
+  duplicatePercent: 0,
   deletedInSession: new Set(), // Tracks deletions in current view session
   
   SUPPORTED_PREVIEW_EXTS: new Set(["pdf", "epub"]),
@@ -70,6 +71,10 @@ export function setDuplicateResults(results) {
 
 export function setCalculatingDuplicates(isCalculating) {
   state.isCalculatingDuplicates = isCalculating;
+}
+
+export function setDuplicatePercent(percent) {
+  state.duplicatePercent = percent;
 }
 
 export function addDeletedInSession(path) {

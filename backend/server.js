@@ -20,7 +20,8 @@ const state = {
   isEnriching: false,
   isSyncing: false,
   scanResults: { total: 0, processed: 0, added: 0, skipped: 0, deleted: 0, errors: 0 },
-  enrichment: { total: 0, current: 0, currentTitle: "" }
+  enrichment: { total: 0, current: 0, currentTitle: "" },
+  duplicateProgress: { total: 0, current: 0, percent: 0 }
 };
 
 let cachedBooks = [];
@@ -30,47 +31,42 @@ let lastSyncPreview = null;
 // ─── Helper Contexts ─────────────────────────────────────────────────────────
 const cache = {
   async getBooks(forceRefresh = false) {
+    // If we have books in memory and aren't forcing, return them
     if (cachedBooks.length > 0 && !forceRefresh) {
       return cachedBooks;
     }
 
-    if (!forceRefresh) {
-      cachedBooks = await cacheManager.load();
-      if (cachedBooks.length > 0) {
-        console.log(`[Cache] 📂 Loaded ${cachedBooks.length} books from local JSON.`);
-        return cachedBooks;
-      }
-    }
-
-    console.log(`[Cache] 🔄 Fetching from Google Sheets...`);
+    console.log(`[Cache] 🔄 Syncing with Google Sheets (Source of Truth)...`);
     try {
+      // 1. Always fetch the master list from Sheets
       const sheetBooks = await fetchAllBooks(SHEET_ID);
       
-      const localBooksMap = new Map(cachedBooks.map((book) => [book.location, book]));
+      // 2. Load local cache to preserve filesystem-only metadata (hashes, sizes, etc.)
+      const localBooks = await cacheManager.load();
+      const localBooksMap = new Map(localBooks.map((book) => [book.location, book]));
       
+      // 3. Merge: Every book in Sheets is kept, enriched with local metadata if available
       cachedBooks = sheetBooks.map((sheetBook) => {
         const localBook = localBooksMap.get(sheetBook.location);
         if (localBook) {
-          // Task 2.3: Prefer Sheets for edits, local for filesystem info
           return {
             ...sheetBook,
+            // Keep filesystem info from local cache
             size: localBook.size || sheetBook.size,
             extension: localBook.extension || sheetBook.extension,
+            fileHash: localBook.fileHash || sheetBook.fileHash,
           };
         }
         return sheetBook;
       });
 
-      // Keep books that are only in local cache (not yet in Sheets)
-      sheetBooks.forEach((sb) => localBooksMap.delete(sb.location));
-      for (const localOnlyBook of localBooksMap.values()) {
-        cachedBooks.push(localOnlyBook);
-      }
-
+      // 4. Update the local JSON to match the new reality
       await cacheManager.save(cachedBooks);
-      console.log(`[Cache] ✅ Loaded ${cachedBooks.length} books and updated local JSON.`);
+      console.log(`[Cache] ✅ Successfully synced ${cachedBooks.length} books from Sheets.`);
     } catch (error) {
       console.error(`[Cache] ❌ Failed to fetch from Google Sheets: ${error.message}`);
+      
+      // Fallback: If Sheets fails, try to load whatever we have locally
       if (cachedBooks.length === 0) {
         cachedBooks = await cacheManager.load();
         if (cachedBooks.length > 0) {
