@@ -1,9 +1,11 @@
+const fs = require("fs").promises;
+const path = require("path");
+
 const BYTES_PER_MB = 1024 * 1024;
+const DUPLICATES_CACHE_PATH = path.join(__dirname, "../storage/duplicates.cache.json");
 
 /**
  * Formats a book object for duplicate detection results.
- * @param {Object} book Book object from cache.
- * @returns {Object} Formatted file info.
  */
 function formatFile(book) {
   return {
@@ -15,24 +17,17 @@ function formatFile(book) {
 }
 
 /**
- * Calculates wasted bytes in a group of duplicates.
- * Assumes the first file is the one kept.
- * @param {Array<Object>} group Group of duplicate book objects.
- * @returns {number} Wasted bytes.
+ * Calculates wasted bytes in a group.
  */
 function calculateWastedBytes(group) {
   if (group.length <= 1) return 0;
-  
   const sizesMB = group.map((b) => parseFloat(b.size) || 0);
-  // Sum of all sizes except the first one
   const wastedMB = sizesMB.slice(1).reduce((sum, size) => sum + size, 0);
   return Math.round(wastedMB * BYTES_PER_MB);
 }
 
 /**
  * Normalizes a filename for comparison.
- * @param {string} location File location/path.
- * @returns {string} Normalized filename.
  */
 function normalizeFilename(location) {
   const filename = location.split("/").pop();
@@ -43,36 +38,28 @@ function normalizeFilename(location) {
 }
 
 /**
- * Calculates string similarity using Dice Coefficient (bigram based).
- * Returns a value between 0 and 1.
+ * Calculates string similarity using Dice Coefficient.
  */
-function getStringSimilarity(s1, s2) {
-  if (s1 === s2) return 1.0;
-  if (s1.length < 2 || s2.length < 2) return 0.0;
-
-  const getBigrams = (str) => {
-    const bigrams = new Set();
-    for (let i = 0; i < str.length - 1; i++) {
-      bigrams.add(str.substring(i, i + 2));
-    }
-    return bigrams;
-  };
-
-  const b1 = getBigrams(s1);
-  const b2 = getBigrams(s2);
+function getStringSimilarity(b1, b2) {
+  if (!b1 || !b2 || b1.size === 0 || b2.size === 0) return 0;
   let intersect = 0;
   for (const b of b1) {
     if (b2.has(b)) intersect++;
   }
-
   return (2.0 * intersect) / (b1.size + b2.size);
 }
 
+function getBigrams(str) {
+  const bigrams = new Set();
+  if (!str || str.length < 2) return bigrams;
+  for (let i = 0; i < str.length - 1; i++) {
+    bigrams.add(str.substring(i, i + 2));
+  }
+  return bigrams;
+}
+
 /**
- * Groups an array of objects by a key or a getter function.
- * @param {Array} arr Array to group.
- * @param {string|Function} keyGetter Key name or function to get the key.
- * @returns {Object} Grouped object.
+ * Groups an array of objects.
  */
 function groupBy(arr, keyGetter) {
   const groups = {};
@@ -86,11 +73,37 @@ function groupBy(arr, keyGetter) {
 }
 
 /**
- * Detects duplicates in the book cache.
- * @param {Array<Object>} books Array of book objects.
- * @returns {Object} Duplicate detection results.
+ * Cache management
  */
-function detectDuplicates(books) {
+const duplicateCache = {
+  async load() {
+    try {
+      const data = await fs.readFile(DUPLICATES_CACHE_PATH, "utf8");
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  },
+  async save(results) {
+    try {
+      await fs.writeFile(DUPLICATES_CACHE_PATH, JSON.stringify(results), "utf8");
+    } catch (err) {
+      console.error("[DuplicateCache] Save failed:", err.message);
+    }
+  },
+  async clear() {
+    try {
+      await fs.unlink(DUPLICATES_CACHE_PATH);
+    } catch {
+      // Ignore if not exists
+    }
+  }
+};
+
+/**
+ * Detects duplicates in the book cache.
+ */
+async function detectDuplicates(books) {
   const results = {
     confirmed: [],
     probable: [],
@@ -103,6 +116,12 @@ function detectDuplicates(books) {
   };
 
   const handledPaths = new Set();
+  
+  // Optimization: Pre-calculate bigrams
+  const booksWithBigrams = books.map(b => ({
+    ...b,
+    _bigrams: getBigrams(normalizeFilename(b.location))
+  }));
 
   // Level 1: SHA256 Hash -> confirmed
   const hashGroups = groupBy(books.filter((b) => b.fileHash), "fileHash");
@@ -120,29 +139,22 @@ function detectDuplicates(books) {
 
   // Level 2: File Size + Extension + Filename Similarity (>50%) -> probable
   const sizeExtGroups = groupBy(
-    books.filter((b) => !handledPaths.has(b.location)),
+    booksWithBigrams.filter((b) => !handledPaths.has(b.location)),
     (b) => `${b.size}_${b.extension || b.location.split(".").pop()}`
   );
 
   Object.entries(sizeExtGroups).forEach(([key, group]) => {
     if (group.length <= 1) return;
-
-    // Sub-group by filename similarity
     const pool = [...group];
-
     while (pool.length > 0) {
       const seed = pool.shift();
-      const seedName = normalizeFilename(seed.location);
       const matches = [seed];
-
       for (let i = 0; i < pool.length; i++) {
-        const compareName = normalizeFilename(pool[i].location);
-        if (getStringSimilarity(seedName, compareName) >= 0.5) {
+        if (getStringSimilarity(seed._bigrams, pool[i]._bigrams) >= 0.5) {
           matches.push(pool.splice(i, 1)[0]);
           i--;
         }
       }
-
       if (matches.length > 1) {
         results.probable.push({
           key: `Size/Ext: ${key}`,
@@ -157,7 +169,7 @@ function detectDuplicates(books) {
 
   // Level 3: Goodreads ID -> probable
   const idGroups = groupBy(
-    books.filter((b) => b.goodreadsCheck === "Yes" && b.goodreadsId && !handledPaths.has(b.location)),
+    booksWithBigrams.filter((b) => b.goodreadsCheck === "Yes" && b.goodreadsId && !handledPaths.has(b.location)),
     "goodreadsId"
   );
   Object.entries(idGroups).forEach(([id, group]) => {
@@ -174,7 +186,7 @@ function detectDuplicates(books) {
 
   // Level 4: Normalized Filename -> possible
   const nameGroups = groupBy(
-    books.filter((b) => !handledPaths.has(b.location)),
+    booksWithBigrams.filter((b) => !handledPaths.has(b.location)),
     (b) => normalizeFilename(b.location)
   );
   Object.entries(nameGroups).forEach(([name, group]) => {
@@ -191,7 +203,12 @@ function detectDuplicates(books) {
   results.stats.totalGroups = results.confirmed.length + results.probable.length + results.possible.length;
   results.stats.totalWastedFormatted = `${(results.stats.totalWastedBytes / BYTES_PER_MB).toFixed(2)} MB`;
 
+  await duplicateCache.save(results);
   return results;
 }
 
-module.exports = { detectDuplicates };
+module.exports = { 
+  detectDuplicates, 
+  loadCachedDuplicates: duplicateCache.load,
+  clearDuplicateCache: duplicateCache.clear
+};

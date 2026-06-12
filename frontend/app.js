@@ -9,6 +9,7 @@ let activeFormat = ""; // quick-filter chip
 
 let isShowingDuplicates = false;
 let duplicateResults = null;
+const deletedInSession = new Set(); // Tracks deletions in current view session
 
 const SUPPORTED_PREVIEW_EXTS = new Set(["pdf", "epub"]);
 
@@ -42,6 +43,10 @@ const EL = {
   previewContent: () => document.getElementById("previewContent"),
   formatChips: () => document.getElementById("formatChips"),
   jumpToTop: () => document.getElementById("jumpToTop"),
+  deleteConfirmModal: () => document.getElementById("deleteConfirmModal"),
+  deleteFilePath: () => document.getElementById("deleteFilePath"),
+  confirmDeleteBtn: () => document.getElementById("confirmDeleteBtn"),
+  cancelDeleteBtn: () => document.getElementById("cancelDeleteBtn"),
 };
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -59,6 +64,9 @@ document.addEventListener("DOMContentLoaded", () => {
   EL.duplicatesBtn().addEventListener("click", toggleDuplicatesView);
   EL.confirmSync().addEventListener("click", handleConfirmSync);
   EL.cancelSync().addEventListener("click", handleCancelSync);
+
+  EL.cancelDeleteBtn().addEventListener("click", hideDeleteModal);
+  EL.confirmDeleteBtn().addEventListener("click", executeDelete);
 
   EL.searchInput().addEventListener("input", resetAndRender);
   EL.typeFilter().addEventListener("change", () => {
@@ -111,7 +119,10 @@ document.addEventListener("DOMContentLoaded", () => {
   EL.closeModal().addEventListener("click", hidePreview);
   EL.modalOverlay().addEventListener("click", hidePreview);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") hidePreview();
+    if (e.key === "Escape") {
+      hidePreview();
+      hideDeleteModal();
+    }
   });
 
   // Infinite scroll
@@ -615,7 +626,7 @@ async function startScan(force = false, isResuming = false) {
         
         // Task 3 Fix: Don't overwrite grid if user is looking at duplicates
         await fetchBooks(false);
-        await fetchDuplicates();
+        await fetchDuplicates(false); // Don't trigger full re-render
         if (!isShowingDuplicates) {
           renderBooks(getFilteredBooks());
         }
@@ -798,6 +809,7 @@ async function toggleDuplicatesView() {
   const btn = EL.duplicatesBtn();
   
   if (isShowingDuplicates) {
+    deletedInSession.clear(); // Reset session deletions when entering view
     btn.classList.add("bg-orange-500/20", "text-white", "border-orange-500");
     await fetchDuplicates();
   } else {
@@ -806,11 +818,11 @@ async function toggleDuplicatesView() {
   }
 }
 
-async function fetchDuplicates() {
+async function fetchDuplicates(shouldRender = true) {
   try {
     const res = await fetch("/api/duplicates");
     duplicateResults = await res.json();
-    if (isShowingDuplicates) renderDuplicates();
+    if (isShowingDuplicates && shouldRender) renderDuplicates();
     updateDuplicateBadge();
   } catch (err) {
     console.error("Error fetching duplicates:", err);
@@ -878,19 +890,23 @@ function renderDuplicateSection(title, groups, badgeClass) {
     
     const filesContainer = groupEl.querySelector(".space-y-1");
     group.files.forEach(file => {
+      const isDeleted = deletedInSession.has(file.path);
       const fileEl = document.createElement("div");
-      fileEl.className = "flex items-center justify-between py-2 border-b border-white/5 last:border-0 group";
+      fileEl.className = `flex items-center justify-between py-2 border-b border-white/5 last:border-0 group ${isDeleted ? "deleted-file" : ""}`;
+      fileEl.id = `dup-${btoa(encodeURIComponent(file.path)).replace(/=/g, "")}`;
       fileEl.innerHTML = `
         <div class="flex-1 min-w-0 pr-4">
-          <div class="text-xs text-white font-medium truncate" title="${escHtml(file.path)}">${escHtml(file.path)}</div>
+          <div class="text-xs ${isDeleted ? "text-rose-400" : "text-white"} font-medium truncate" title="${escHtml(file.path)}">${escHtml(file.path)}</div>
           <div class="text-[10px] text-slate-500 mt-0.5">${file.size} MB • ${file.ext.toUpperCase()}</div>
         </div>
-        <button class="px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white text-[10px] font-bold uppercase transition-all opacity-0 group-hover:opacity-100 delete-file-btn">
-          <i class="fas fa-trash-alt mr-1"></i> Delete
+        <button class="px-3 py-1.5 rounded-lg ${isDeleted ? "delete-file-btn deleted" : "bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white opacity-0 group-hover:opacity-100 delete-file-btn"}" ${isDeleted ? "disabled" : ""}>
+          <i class="fas ${isDeleted ? "fa-check" : "fa-trash-alt"} mr-1"></i> ${isDeleted ? "Deleted" : "Delete"}
         </button>
       `;
       
-      fileEl.querySelector(".delete-file-btn").addEventListener("click", () => handleDeleteFile(file.path));
+      if (!isDeleted) {
+        fileEl.querySelector(".delete-file-btn").addEventListener("click", () => showDeleteModal(file.path));
+      }
       filesContainer.appendChild(fileEl);
     });
     
@@ -898,9 +914,30 @@ function renderDuplicateSection(title, groups, badgeClass) {
   });
 }
 
-async function handleDeleteFile(location) {
-  if (!confirm(`Delete permanently: ${location}?\nThis action cannot be undone.`)) return;
+let pendingDeletePath = null;
+
+function showDeleteModal(location) {
+  pendingDeletePath = location;
+  EL.deleteFilePath().textContent = location;
+  const modal = EL.deleteConfirmModal();
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+}
+
+function hideDeleteModal() {
+  EL.deleteConfirmModal().classList.add("hidden");
+  EL.deleteConfirmModal().classList.remove("flex");
+  pendingDeletePath = null;
+}
+
+async function executeDelete() {
+  if (!pendingDeletePath) return;
+  const location = pendingDeletePath;
+  const confirmBtn = EL.confirmDeleteBtn();
   
+  confirmBtn.disabled = true;
+  confirmBtn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Deleting...';
+
   try {
     const res = await fetch("/api/books/file", {
       method: "DELETE",
@@ -909,9 +946,29 @@ async function handleDeleteFile(location) {
     });
     
     if (res.ok) {
-      // Optimistically update UI or just re-fetch
-      await fetchBooks();
-      await fetchDuplicates();
+      deletedInSession.add(location);
+      
+      // Update UI element immediately if it exists
+      const elementId = `dup-${btoa(encodeURIComponent(location)).replace(/=/g, "")}`;
+      const rowEl = document.getElementById(elementId);
+      if (rowEl) {
+        rowEl.classList.add("deleted-file");
+        const titleEl = rowEl.querySelector(".text-white") || rowEl.querySelector(".text-rose-400");
+        if (titleEl) {
+          titleEl.classList.remove("text-white");
+          titleEl.classList.add("text-rose-400");
+        }
+        const btn = rowEl.querySelector(".delete-file-btn");
+        if (btn) {
+          btn.disabled = true;
+          btn.className = "px-3 py-1.5 rounded-lg delete-file-btn deleted";
+          btn.innerHTML = '<i class="fas fa-check mr-1"></i> Deleted';
+        }
+      }
+
+      hideDeleteModal();
+      await fetchBooks(false);
+      await fetchDuplicates(false); // Update results data but don't re-render
     } else {
       const err = await res.json();
       alert(`Error: ${err.error}`);
@@ -919,5 +976,8 @@ async function handleDeleteFile(location) {
   } catch (err) {
     console.error("Error deleting file:", err);
     alert("Could not delete file.");
+  } finally {
+    confirmBtn.disabled = false;
+    confirmBtn.innerHTML = "Permanently Delete";
   }
 }

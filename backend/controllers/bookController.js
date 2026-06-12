@@ -6,7 +6,7 @@ const { fetchAllBooks } = require("../clients/googleSheetsClient");
 const { getValidatedAbsolutePath } = require("../services/enrichmentService");
 const { getPreview } = require("../utils/preview");
 const { extractEmbeddedCover } = require("../utils/cover");
-const { detectDuplicates } = require("../services/duplicateDetector.service");
+const { detectDuplicates, loadCachedDuplicates, clearDuplicateCache } = require("../services/duplicateDetector.service");
 const writeQueue = require("../services/writeQueue.service");
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
@@ -108,8 +108,13 @@ const bookController = {
    */
   async getDuplicates(req, res, cache) {
     try {
+      const cachedResults = await loadCachedDuplicates();
+      if (cachedResults) {
+        return res.json(cachedResults);
+      }
+
       const books = await cache.getBooks();
-      const results = detectDuplicates(books);
+      const results = await detectDuplicates(books);
       res.json(results);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -144,8 +149,9 @@ const bookController = {
           writeQueue.enqueueDelete(book.rowIndex);
         }
 
-        // 4. Save updated JSON cache
+        // 4. Save updated JSON cache and clear duplicate cache
         await cache.saveBooks();
+        await clearDuplicateCache();
       }
 
       res.json({ message: "Book deleted successfully" });

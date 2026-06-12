@@ -646,3 +646,21 @@ input[type="number"] {
   pointer-events: none;
   transform: translateY(20px);
 }
+
+/* Deletion feedback */
+.deleted-file {
+  color: #f87171 !important;
+  text-decoration: line-through !important;
+  opacity: 0.6;
+}
+
+.deleted-file .text-white {
+  color: #f87171 !important;
+}
+
+.delete-file-btn.deleted {
+  background: rgba(100, 116, 139, 0.1) !important;
+  color: #64748b !important;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
