@@ -7,6 +7,18 @@ const path = require('path');
  */
 async function generatePdfPreview(filePath) {
     console.log(`[Preview] Generating PDF preview for: ${filePath}`);
+    
+    // Temporarily suppress specific pdf.js warnings about JBIG2/WASM 
+    // since the JS fallback works perfectly fine for our preview needs.
+    const originalWarn = console.warn;
+    console.warn = (...args) => {
+        const msg = args.join(' ');
+        if (msg.includes('JBig2Image#instantiateWasm') || msg.includes('Falling back to JS JBIG2 decoder')) {
+            return;
+        }
+        originalWarn(...args);
+    };
+
     try {
         const document = await pdf(filePath, { scale: 1.2 });
         const pages = [];
@@ -24,6 +36,9 @@ async function generatePdfPreview(filePath) {
     } catch (err) {
         console.error(`[Preview] PDF Generation Failed: ${err.message}`);
         return null;
+    } finally {
+        // Restore original console.warn
+        console.warn = originalWarn;
     }
 }
 

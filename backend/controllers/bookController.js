@@ -2,14 +2,12 @@ const path = require("path");
 const fs = require("fs");
 const fsPromises = require("fs").promises;
 const mime = require("mime-types");
-const { fetchAllBooks } = require("../clients/googleSheetsClient");
 const { getValidatedAbsolutePath } = require("../services/enrichmentService");
 const { getPreview } = require("../utils/preview");
 const { extractEmbeddedCover } = require("../utils/cover");
 const { detectDuplicates, loadCachedDuplicates, clearDuplicateCache } = require("../services/duplicateDetector.service");
 const writeQueue = require("../services/writeQueue.service");
 
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const BOOKS_PATH = process.env.BOOKS_PATH;
 
 const ERR_BOOK_NOT_FOUND = "Book not found";
@@ -34,10 +32,10 @@ const bookController = {
   /**
    * Generates a preview for a specific book.
    */
-  async getBookPreview(req, res) {
+  async getBookPreview(req, res, cache) {
     try {
       const rowIndex = parseInt(req.params.rowIndex);
-      const books = await fetchAllBooks(SHEET_ID);
+      const books = await cache.getBooks();
       const book = books.find((b) => b.rowIndex === rowIndex);
       
       if (!book) return res.status(404).json({ error: ERR_BOOK_NOT_FOUND });
@@ -57,10 +55,10 @@ const bookController = {
   /**
    * Extracts and serves the cover image for a book.
    */
-  async getBookCover(req, res) {
+  async getBookCover(req, res, cache) {
     try {
       const rowIndex = parseInt(req.params.rowIndex);
-      const books = await fetchAllBooks(SHEET_ID);
+      const books = await cache.getBooks();
       const book = books.find((b) => b.rowIndex === rowIndex);
       
       if (!book) return res.status(404).send(ERR_BOOK_NOT_FOUND);
@@ -81,10 +79,10 @@ const bookController = {
   /**
    * Handles book file download.
    */
-  async downloadBook(req, res) {
+  async downloadBook(req, res, cache) {
     try {
       const rowIndex = parseInt(req.params.rowIndex);
-      const books = await fetchAllBooks(SHEET_ID);
+      const books = await cache.getBooks();
       const book = books.find((b) => b.rowIndex === rowIndex);
       
       if (!book) return res.status(404).send(ERR_BOOK_NOT_FOUND);

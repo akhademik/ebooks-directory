@@ -22,4 +22,10 @@ export default [
       "sonarjs/cognitive-complexity": ["warn", 20],
     },
   },
+  {
+    files: ["frontend/**/*.js"],
+    languageOptions: {
+      sourceType: "module",
+    },
+  },
 ];

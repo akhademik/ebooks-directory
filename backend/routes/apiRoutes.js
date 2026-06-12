@@ -10,9 +10,9 @@ function createApiRouter({ state, cache, scanContext }) {
 
   // Book routes
   router.get("/books", (req, res) => bookController.getAllBooks(req, res, cache));
-  router.get("/preview/:rowIndex", (req, res) => bookController.getBookPreview(req, res));
-  router.get("/cover/:rowIndex", (req, res) => bookController.getBookCover(req, res));
-  router.get("/download/:rowIndex", (req, res) => bookController.downloadBook(req, res));
+  router.get("/preview/:rowIndex", (req, res) => bookController.getBookPreview(req, res, cache));
+  router.get("/cover/:rowIndex", (req, res) => bookController.getBookCover(req, res, cache));
+  router.get("/download/:rowIndex", (req, res) => bookController.downloadBook(req, res, cache));
   router.get("/duplicates", (req, res) => bookController.getDuplicates(req, res, cache));
   router.delete("/books/file", (req, res) => bookController.deleteBookFile(req, res, cache));
 
