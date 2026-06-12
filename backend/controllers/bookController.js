@@ -1,9 +1,13 @@
 const path = require("path");
+const fs = require("fs");
+const fsPromises = require("fs").promises;
 const mime = require("mime-types");
 const { fetchAllBooks } = require("../clients/googleSheetsClient");
 const { getValidatedAbsolutePath } = require("../services/enrichmentService");
 const { getPreview } = require("../utils/preview");
 const { extractEmbeddedCover } = require("../utils/cover");
+const { detectDuplicates } = require("../services/duplicateDetector.service");
+const writeQueue = require("../services/writeQueue.service");
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const BOOKS_PATH = process.env.BOOKS_PATH;
@@ -96,6 +100,58 @@ const bookController = {
       res.sendFile(absolutePath);
     } catch (error) {
       res.status(500).send(error.message);
+    }
+  },
+
+  /**
+   * Detects duplicate books in the cache.
+   */
+  async getDuplicates(req, res, cache) {
+    try {
+      const books = await cache.getBooks();
+      const results = detectDuplicates(books);
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  },
+
+  /**
+   * Deletes a book file and its record.
+   */
+  async deleteBookFile(req, res, cache) {
+    const { location } = req.body;
+    if (!location) return res.status(400).json({ error: "Location is required" });
+
+    try {
+      const absolutePath = await getValidatedAbsolutePath(BOOKS_PATH, location);
+      if (!absolutePath || !fs.existsSync(absolutePath)) {
+        return res.status(404).json({ error: ERR_FILE_NOT_FOUND });
+      }
+
+      // 1. Delete physical file
+      await fsPromises.unlink(absolutePath);
+
+      // 2. Remove from local cache
+      const books = await cache.getBooks();
+      const index = books.findIndex((b) => b.location === location);
+      if (index !== -1) {
+        const book = books[index];
+        books.splice(index, 1);
+
+        // 3. Enqueue deletion from Sheets
+        if (book.rowIndex) {
+          writeQueue.enqueueDelete(book.rowIndex);
+        }
+
+        // 4. Save updated JSON cache
+        await cache.saveBooks();
+      }
+
+      res.json({ message: "Book deleted successfully" });
+    } catch (error) {
+      console.error("[BookController] Delete error:", error.message);
+      res.status(500).json({ error: error.message });
     }
   }
 };

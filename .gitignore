@@ -3,3 +3,4 @@ node_modules/
 gen-lang-client-*.json
 return.html
 
+backend/storage/books.cache.json

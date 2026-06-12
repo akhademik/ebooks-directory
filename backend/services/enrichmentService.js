@@ -1,7 +1,8 @@
 const path = require("path");
 const fs = require("fs").promises;
 const { enrichBookMetadata } = require("./scannerService");
-const { saveBook } = require("../clients/googleSheetsClient");
+const writeQueue = require("./writeQueue.service");
+const { runHashWorker } = require("./hashService");
 
 const DELAY_MS = 7000;
 const RETRY_DELAY_MS = 3000;
@@ -44,8 +45,8 @@ function logEnrichmentResult(workerId, book, metadata) {
 /**
  * Processes a single book metadata enrichment.
  */
-async function processBookEnrichment({ workerId, book, config, books }) {
-  const { sheetId, scanId, updateCache, libraryRoot, isContextValid } = config;
+async function processBookEnrichment({ workerId, book, config }) {
+  const { scanId, updateCache, libraryRoot, isContextValid } = config;
   
   try {
     // eslint-disable-next-line sonarjs/pseudo-random
@@ -73,7 +74,7 @@ async function processBookEnrichment({ workerId, book, config, books }) {
     if (!isContextValid(scanId)) return;
 
     logEnrichmentResult(workerId, book, metadata);
-    await saveBook(sheetId, metadata, books);
+    writeQueue.enqueue(metadata);
     updateCache(metadata);
   } catch (error) {
     console.error(`[Worker #${workerId} Error] ${book.title}:`, error.message);
@@ -99,7 +100,11 @@ async function startEnrichmentWorker(config) {
     state.enrichment.total = pending.length;
 
     if (pending.length === 0) {
-      if (!state.isScanning) break;
+      if (!state.isScanning) {
+        // Enrichment queue is empty and scanning is done, start hash worker
+        await runHashWorker(config);
+        break;
+      }
       await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
       continue;
     }
@@ -114,7 +119,7 @@ async function startEnrichmentWorker(config) {
     state.enrichment.current++;
     state.enrichment.currentTitle = book.title;
 
-    await processBookEnrichment({ workerId, book, config, books });
+    await processBookEnrichment({ workerId, book, config });
   }
 
   console.log(`🏁 [Worker #${workerId}] Finished.`);

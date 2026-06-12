@@ -7,6 +7,9 @@ let sortKey = null; // 'title' | 'ext' | 'size' | 'rating'
 let sortDir = "asc"; // 'asc' | 'desc'
 let activeFormat = ""; // quick-filter chip
 
+let isShowingDuplicates = false;
+let duplicateResults = null;
+
 const SUPPORTED_PREVIEW_EXTS = new Set(["pdf", "epub"]);
 
 // ─── Element refs ─────────────────────────────────────────────────────────────
@@ -21,6 +24,8 @@ const EL = {
   minSize: () => document.getElementById("minSize"),
   syncBtn: () => document.getElementById("syncBtn"),
   scanBtn: () => document.getElementById("scanBtn"),
+  duplicatesBtn: () => document.getElementById("duplicatesBtn"),
+  duplicateBadge: () => document.getElementById("duplicateBadge"),
   statusArea: () => document.getElementById("statusArea"),
   statusText: () => document.getElementById("statusText"),
   scanProgress: () => document.getElementById("scanProgress"),
@@ -42,6 +47,7 @@ const EL = {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   fetchBooks();
+  fetchDuplicates();
   checkScanStatus();
   
   // By default, start a normal scan on load. 
@@ -50,6 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   EL.scanBtn().addEventListener("click", () => startScan(true));
   EL.syncBtn().addEventListener("click", handleSyncClick);
+  EL.duplicatesBtn().addEventListener("click", toggleDuplicatesView);
   EL.confirmSync().addEventListener("click", handleConfirmSync);
   EL.cancelSync().addEventListener("click", handleCancelSync);
 
@@ -442,17 +449,19 @@ function renderBooks(books, append = false) {
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 let isFetchingBooks = false;
-async function fetchBooks() {
+async function fetchBooks(shouldRender = true) {
   if (isFetchingBooks) return;
   isFetchingBooks = true;
   try {
     const response = await fetch("/api/books");
     allBooks = await response.json();
     updateFilters();
-    renderBooks(getFilteredBooks());
+    if (shouldRender && !isShowingDuplicates) {
+      renderBooks(getFilteredBooks());
+    }
   } catch (err) {
     console.error("Error fetching books:", err);
-    showError("Could not load books. Is the server running?");
+    if (shouldRender) showError("Could not load books. Is the server running?");
   } finally {
     isFetchingBooks = false;
   }
@@ -594,7 +603,7 @@ async function startScan(force = false, isResuming = false) {
 
         if (enrichment.current > lastProcessed) {
           lastProcessed = enrichment.current;
-          fetchBooks();
+          fetchBooks(false); // Fetch data in background without re-rendering
         }
       }
 
@@ -603,7 +612,14 @@ async function startScan(force = false, isResuming = false) {
         window._scanPoll = null;
         statusText.textContent = "Library sync complete";
         progressBar.style.width = "100%";
-        fetchBooks();
+        
+        // Task 3 Fix: Don't overwrite grid if user is looking at duplicates
+        await fetchBooks(false);
+        await fetchDuplicates();
+        if (!isShowingDuplicates) {
+          renderBooks(getFilteredBooks());
+        }
+        
         setTimeout(() => {
           if (!window._scanPoll) statusArea.classList.remove("is-active");
         }, 3000);
@@ -774,4 +790,134 @@ function showError(msg) {
         <div style="grid-column:1/-1;text-align:center;padding:80px 0;color:#f87171;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;">
             ${escHtml(msg)}
         </div>`;
+}
+
+// ─── Duplicates View ─────────────────────────────────────────────────────────
+async function toggleDuplicatesView() {
+  isShowingDuplicates = !isShowingDuplicates;
+  const btn = EL.duplicatesBtn();
+  
+  if (isShowingDuplicates) {
+    btn.classList.add("bg-orange-500/20", "text-white", "border-orange-500");
+    await fetchDuplicates();
+  } else {
+    btn.classList.remove("bg-orange-500/20", "text-white", "border-orange-500");
+    resetAndRender();
+  }
+}
+
+async function fetchDuplicates() {
+  try {
+    const res = await fetch("/api/duplicates");
+    duplicateResults = await res.json();
+    if (isShowingDuplicates) renderDuplicates();
+    updateDuplicateBadge();
+  } catch (err) {
+    console.error("Error fetching duplicates:", err);
+  }
+}
+
+function updateDuplicateBadge() {
+  const badge = EL.duplicateBadge();
+  const total = duplicateResults ? duplicateResults.stats.totalGroups : 0;
+  if (total > 0) {
+    badge.textContent = total;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+function renderDuplicates() {
+  if (!isShowingDuplicates) return;
+  
+  const grid = EL.bookGrid();
+  const empty = EL.emptyState();
+  
+  grid.innerHTML = "";
+  
+  const { confirmed, probable, possible, stats } = duplicateResults;
+  
+  EL.resultCount().textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
+  
+  if (stats.totalGroups === 0) {
+    empty.classList.add("visible");
+    return;
+  }
+  empty.classList.remove("visible");
+
+  renderDuplicateSection("Confirmed Duplicates", confirmed, "bg-rose-500/10 text-rose-500 border-rose-500/20");
+  renderDuplicateSection("Probable Duplicates", probable, "bg-amber-500/10 text-amber-500 border-amber-500/20");
+  renderDuplicateSection("Possible Duplicates", possible, "bg-orange-500/10 text-orange-500 border-orange-500/20");
+}
+
+function renderDuplicateSection(title, groups, badgeClass) {
+  if (groups.length === 0) return;
+  
+  const grid = EL.bookGrid();
+  
+  const sectionHeader = document.createElement("div");
+  sectionHeader.className = "col-span-full mt-8 mb-4 flex items-center gap-3";
+  sectionHeader.innerHTML = `
+    <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${badgeClass}">${title}</span>
+    <div class="h-px flex-1 bg-white/5"></div>
+  `;
+  grid.appendChild(sectionHeader);
+  
+  groups.forEach(group => {
+    const groupEl = document.createElement("div");
+    groupEl.className = "col-span-full bg-slate-900/40 rounded-2xl border border-white/5 p-4 mb-4";
+    
+    groupEl.innerHTML = `
+      <div class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3 flex items-center justify-between">
+        <span>Group: ${escHtml(group.key)}</span>
+        <span>${group.files.length} files</span>
+      </div>
+      <div class="space-y-1" id="group-${group.key}"></div>
+    `;
+    
+    const filesContainer = groupEl.querySelector(".space-y-1");
+    group.files.forEach(file => {
+      const fileEl = document.createElement("div");
+      fileEl.className = "flex items-center justify-between py-2 border-b border-white/5 last:border-0 group";
+      fileEl.innerHTML = `
+        <div class="flex-1 min-w-0 pr-4">
+          <div class="text-xs text-white font-medium truncate" title="${escHtml(file.path)}">${escHtml(file.path)}</div>
+          <div class="text-[10px] text-slate-500 mt-0.5">${file.size} MB • ${file.ext.toUpperCase()}</div>
+        </div>
+        <button class="px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white text-[10px] font-bold uppercase transition-all opacity-0 group-hover:opacity-100 delete-file-btn">
+          <i class="fas fa-trash-alt mr-1"></i> Delete
+        </button>
+      `;
+      
+      fileEl.querySelector(".delete-file-btn").addEventListener("click", () => handleDeleteFile(file.path));
+      filesContainer.appendChild(fileEl);
+    });
+    
+    grid.appendChild(groupEl);
+  });
+}
+
+async function handleDeleteFile(location) {
+  if (!confirm(`Delete permanently: ${location}?\nThis action cannot be undone.`)) return;
+  
+  try {
+    const res = await fetch("/api/books/file", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ location })
+    });
+    
+    if (res.ok) {
+      // Optimistically update UI or just re-fetch
+      await fetchBooks();
+      await fetchDuplicates();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.error}`);
+    }
+  } catch (err) {
+    console.error("Error deleting file:", err);
+    alert("Could not delete file.");
+  }
 }

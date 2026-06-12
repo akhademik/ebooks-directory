@@ -2,6 +2,8 @@ const path = require("path");
 const fs = require("fs");
 const { fetchMetadata } = require("../clients/goodreadsClient");
 
+const BYTES_PER_MB = 1024 * 1024;
+
 /**
  * Parses a filename to extract title and author.
  */
@@ -40,7 +42,7 @@ function parseFilename(filename) {
 function getBasicBookInfo(filename, relativePath, absolutePath) {
   const parsed = parseFilename(filename);
   const stats = fs.statSync(absolutePath);
-  const sizeInMB = (stats.size / (1024 * 1024)).toFixed(2);
+  const sizeInMB = (stats.size / BYTES_PER_MB).toFixed(2);
 
   return {
     title: parsed.title,

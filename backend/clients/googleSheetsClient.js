@@ -6,6 +6,8 @@ const GOOGLE_SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 const GOOGLE_SHEETS_API_VERSION = "v4";
 const SHEETS_SERVICE = google.sheets(GOOGLE_SHEETS_API_VERSION);
 
+const ERROR_QUOTA_EXCEEDED = "Quota exceeded";
+
 // ─── Column Mapping Cache ───────────────────────────────────────────────────
 let columnMappingCache = null;
 let lastCacheUpdateTimestamp = 0;
@@ -23,6 +25,7 @@ const DEFAULT_COLUMN_MAPPING = {
   source: 8,
   size: 9,
   location: 10,
+  fileHash: 11,
 };
 
 const HEADER_NAME_TO_KEY_MAP = {
@@ -37,6 +40,7 @@ const HEADER_NAME_TO_KEY_MAP = {
   Source: "source",
   "File Size": "size",
   Location: "location",
+  "File Hash": "fileHash",
 };
 
 /**
@@ -109,7 +113,7 @@ async function setupSpreadsheetHeaders(spreadsheetId) {
   try {
     const response = await SHEETS_SERVICE.spreadsheets.values.get({
       spreadsheetId,
-      range: "Sheet1!A1:K1",
+      range: "Sheet1!A1:L1",
       auth,
     });
 
@@ -150,6 +154,7 @@ function mapRowToBook(row, index, mapping) {
     source: getCellValue(mapping.source),
     size: getCellValue(mapping.size),
     location: normalizePath(row[mapping.location]),
+    fileHash: getCellValue(mapping.fileHash),
   };
 }
 
@@ -228,7 +233,7 @@ async function saveBook(spreadsheetId, bookData, existingBooks = null) {
       });
     }
   } catch (error) {
-    if (error.message.includes("Quota exceeded")) {
+    if (error.message.includes(ERROR_QUOTA_EXCEEDED)) {
       await new Promise((resolve) => setTimeout(resolve, 60000));
       return await saveBook(spreadsheetId, bookData, existingBooks);
     }
@@ -255,11 +260,51 @@ async function batchAddBooks(spreadsheetId, booksArray) {
       auth,
     });
   } catch (error) {
-    if (error.message.includes("Quota exceeded")) {
+    if (error.message.includes(ERROR_QUOTA_EXCEEDED)) {
       await new Promise((resolve) => setTimeout(resolve, 60000));
       return await batchAddBooks(spreadsheetId, booksArray);
     }
     throw new Error(`Failed to batch add books: ${error.message}`, { cause: error });
+  }
+}
+
+/**
+ * Batch-updates multiple books in the spreadsheet.
+ * Each book object must have a valid rowIndex.
+ */
+async function batchUpdateBooks(spreadsheetId, booksArray) {
+  if (!booksArray?.length) return;
+
+  const auth = await getAuthenticatedClient();
+  const mapping = await getColumnMapping(spreadsheetId, auth);
+  
+  const maxIndex = Math.max(...Object.values(mapping));
+  const lastColumnLetter = String.fromCharCode(65 + Math.min(25, maxIndex));
+
+  const data = booksArray
+    .filter(book => book.rowIndex)
+    .map((book) => ({
+      range: `Sheet1!A${book.rowIndex}:${lastColumnLetter}${book.rowIndex}`,
+      values: [mapBookToRow(book, mapping)],
+    }));
+
+  if (data.length === 0) return;
+
+  try {
+    await SHEETS_SERVICE.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      resource: {
+        valueInputOption: "RAW",
+        data,
+      },
+      auth,
+    });
+  } catch (error) {
+    if (error.message.includes(ERROR_QUOTA_EXCEEDED)) {
+      await new Promise((resolve) => setTimeout(resolve, 60000));
+      return await batchUpdateBooks(spreadsheetId, booksArray);
+    }
+    throw new Error(`Failed to batch update books: ${error.message}`, { cause: error });
   }
 }
 
@@ -299,5 +344,6 @@ module.exports = {
   fetchAllBooks,
   saveBook,
   batchAddBooks,
+  batchUpdateBooks,
   batchDeleteBooks,
 };

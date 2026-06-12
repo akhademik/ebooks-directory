@@ -13,6 +13,8 @@ function createApiRouter({ state, cache, scanContext }) {
   router.get("/preview/:rowIndex", (req, res) => bookController.getBookPreview(req, res));
   router.get("/cover/:rowIndex", (req, res) => bookController.getBookCover(req, res));
   router.get("/download/:rowIndex", (req, res) => bookController.downloadBook(req, res));
+  router.get("/duplicates", (req, res) => bookController.getDuplicates(req, res, cache));
+  router.delete("/books/file", (req, res) => bookController.deleteBookFile(req, res, cache));
 
   // Sync and Enrichment routes
   router.get("/scan", (req, res) => syncController.startEnrichment(req, res, {

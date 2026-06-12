@@ -81,6 +81,18 @@
           <div class="w-px h-5 bg-slate-700"></div>
 
           <button
+            id="duplicatesBtn"
+            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-500/30 text-orange-400 hover:text-white hover:border-orange-500 hover:bg-orange-500/10 text-xs font-bold uppercase tracking-widest transition-all relative"
+            title="Show potential duplicate files"
+          >
+            <i class="fas fa-copy"></i>
+            Duplicates
+            <span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>
+          </button>
+
+          <div class="w-px h-5 bg-slate-700"></div>
+
+          <button
             id="syncBtn"
             class="flex items-center gap-2 px-4 py-2 rounded-xl border border-indigo-500/30 text-indigo-400 hover:text-white hover:border-indigo-500 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
             title="Sync file system with Google Sheets"
