@@ -25,6 +25,8 @@ async function load() {
  */
 async function save(books) {
   try {
+    const dir = path.dirname(CACHE_FILE_PATH);
+    await fs.mkdir(dir, { recursive: true });
     const data = JSON.stringify(books, null, 2);
     await fs.writeFile(CACHE_FILE_PATH, data, "utf8");
   } catch (error) {

@@ -10,6 +10,7 @@ services:
     volumes:
       # NAS_PATH se duoc truyen tu giao dien Portainer
       - ${NAS_PATH}:/books
+      - ./backend/storage:/app/backend/storage
     environment:
       - BOOKS_PATH=/books
       - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}

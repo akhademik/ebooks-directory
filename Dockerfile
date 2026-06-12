@@ -26,6 +26,9 @@ RUN npm install --prefix backend
 # Copy toàn bộ mã nguồn vào container
 COPY . .
 
+# Tạo thư mục storage nếu chưa tồn tại
+RUN mkdir -p backend/storage
+
 # Ép Puppeteer dùng Chrome của hệ thống (nhẹ và ổn định hơn)
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
