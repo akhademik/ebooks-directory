@@ -4,8 +4,7 @@
   "description": "Backend for personal book library management",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test:scanner": "node tests/test_scanner.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
