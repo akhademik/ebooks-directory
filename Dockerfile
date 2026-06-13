@@ -1,39 +1,32 @@
 FROM node:22-slim
 
-# Cài đặt các thư viện hệ thống cần thiết cho Puppeteer và Chrome
-RUN apt-get update \
-    && apt-get install -y wget gnupg \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && sh -c 'echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
-      --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+       ca-certificates curl \
+       fonts-freefont-ttf \
+       libxss1 \
+       --no-install-recommends \
+    && curl -fsSL "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
+       -o /tmp/chrome.deb \
+    && apt-get install -y /tmp/chrome.deb \
+    && apt-get purge -y --auto-remove curl \
+    && rm /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
+    NODE_ENV=production
 
 WORKDIR /app
 
-# Copy các file package trước để tận dụng cache của Docker
-COPY package*.json ./
 COPY backend/package*.json ./backend/
+RUN npm install --prefix backend --omit=dev
 
-# Bỏ qua download chromium để tránh lỗi và giảm dung lượng
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+COPY backend/ ./backend/
+COPY frontend/ ./frontend/
 
-# Cài đặt thư viện Node.js cho backend
-RUN npm install --prefix backend
-
-# Copy toàn bộ mã nguồn vào container
-COPY . .
-
-# Tạo thư mục storage nếu chưa tồn tại
 RUN mkdir -p backend/storage
 
-# Ép Puppeteer dùng Chrome của hệ thống (nhẹ và ổn định hơn)
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-
-# Port ứng dụng
 EXPOSE 3000
 
-# Lệnh khởi chạy
 CMD ["node", "backend/server.js"]
