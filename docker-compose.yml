@@ -1,15 +1,14 @@
 services:
   ebook-manager:
-    # 1. Change this line to pull your new automated image from Docker Hub
-    image: hajtran/ebooks-directory:latest
+    build: .
     container_name: ebook-manager
     restart: always
     ports:
       - "3000:3000"
+    env_file:
+      - .env.docker
     volumes:
-      # NAS_PATH se duoc truyen tu giao dien Portainer
       - ${NAS_PATH}:/books
-      - ./backend/storage:/app/backend/storage
     environment:
       - BOOKS_PATH=/books
       - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
