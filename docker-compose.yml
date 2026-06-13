@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   ebook-manager:
-    build: .
+    # 1. Change this line to pull your new automated image from Docker Hub
+    image: hajtran/ebooks-directory:latest
     container_name: ebook-manager
     restart: always
     ports:
