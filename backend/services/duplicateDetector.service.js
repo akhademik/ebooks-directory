@@ -103,12 +103,14 @@ const duplicateCache = {
     }
   },
   async save(results) {
+    console.log(`[DuplicateCache] Saving to ${DUPLICATES_CACHE_PATH}...`);
     try {
       await fs.writeFile(
         DUPLICATES_CACHE_PATH,
         JSON.stringify(results),
         "utf8",
       );
+      console.log(`[DuplicateCache] Successfully saved.`);
     } catch (err) {
       console.error("[DuplicateCache] Save failed:", err.message);
     }
@@ -187,10 +189,57 @@ function detectHashDuplicates(books, handledPaths) {
 }
 
 /**
+ * Collects fuzzy matches for a single seed book from the pool.
+ */
+async function collectFuzzyMatches(seed, pool, handledPaths, iterationsRef) {
+  const matches = [seed];
+  for (let i = 0; i < pool.length; i++) {
+    if (handledPaths.has(pool[i].location)) {
+      pool.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (isFuzzyMatch(seed, pool[i])) {
+      const match = pool.splice(i, 1)[0];
+      matches.push(match);
+      handledPaths.add(match.location);
+      i--;
+    }
+    if (++iterationsRef.count % 50 === 0) {
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+  return matches;
+}
+
+/**
+ * Processes one prefix pool for fuzzy duplicates.
+ */
+async function processFuzzyPool(pool, handledPaths, iterationsRef) {
+  const results = [];
+  while (pool.length > 0) {
+    const seed = pool.shift();
+    if (handledPaths.has(seed.location)) continue;
+    const matches = await collectFuzzyMatches(seed, pool, handledPaths, iterationsRef);
+    if (matches.length > 1) {
+      results.push(
+        processGroup({
+          key: `Fuzzy: ${seed.title}`,
+          confidence: "probable",
+          reason: "fuzzy_match",
+          files: matches.map(formatFile),
+        }),
+      );
+      handledPaths.add(seed.location);
+    }
+  }
+  return results;
+}
+
+/**
  * Level 2: Fuzzy Title & Author Match -> probable (Optimized)
  */
 async function detectFuzzyDuplicates(books, handledPaths, onProgress) {
-  const results = [];
   const available = books.filter(
     (b) => !handledPaths.has(b.location) && b._cleanTitle.length >= 3,
   );
@@ -204,57 +253,21 @@ async function detectFuzzyDuplicates(books, handledPaths, onProgress) {
   });
 
   const prefixes = Object.keys(titleGroups);
-  let totalIterations = 0;
   const totalPrefixes = prefixes.length;
+  const iterationsRef = { count: 0 };
+  const results = [];
 
   for (let pIdx = 0; pIdx < totalPrefixes; pIdx++) {
-    const prefix = prefixes[pIdx];
-    const pool = titleGroups[prefix];
-    
     if (onProgress) {
-      onProgress({ 
-        total: totalPrefixes, 
-        current: pIdx, 
-        percent: Math.round((pIdx / totalPrefixes) * 100) 
+      onProgress({
+        total: totalPrefixes,
+        current: pIdx,
+        percent: Math.round((pIdx / totalPrefixes) * 100),
       });
     }
-
-    while (pool.length > 0) {
-      const seed = pool.shift();
-      if (handledPaths.has(seed.location)) continue;
-
-      const matches = [seed];
-      for (let i = 0; i < pool.length; i++) {
-        if (handledPaths.has(pool[i].location)) {
-          pool.splice(i, 1);
-          i--;
-          continue;
-        }
-
-        if (isFuzzyMatch(seed, pool[i])) {
-          const match = pool.splice(i, 1)[0];
-          matches.push(match);
-          handledPaths.add(match.location);
-          i--;
-        }
-
-        if (++totalIterations % 50 === 0) {
-          await new Promise((r) => setImmediate(r));
-        }
-      }
-
-      if (matches.length > 1) {
-        results.push(
-          processGroup({
-            key: `Fuzzy: ${seed.title}`,
-            confidence: "probable",
-            reason: "fuzzy_match",
-            files: matches.map(formatFile),
-          }),
-        );
-        handledPaths.add(seed.location);
-      }
-    }
+    const pool = titleGroups[prefixes[pIdx]];
+    const poolResults = await processFuzzyPool(pool, handledPaths, iterationsRef);
+    results.push(...poolResults);
   }
   return results;
 }
@@ -294,10 +307,54 @@ function detectIdDuplicates(books, handledPaths) {
 }
 
 /**
+ * Collects size-based matches for a single seed book from the sorted pool.
+ */
+async function collectSizeMatches(seed, seedSize, pool, iterationsRef) {
+  const matches = [seed];
+  for (let i = 0; i < pool.length; i++) {
+    const compSize = parseFloat(pool[i].size) || 0;
+    // OPTIMIZATION: Since pool is sorted by size, we can break early
+    if (compSize > seedSize * (1 + SIZE_DIFFERENCE_THRESHOLD)) break;
+
+    const titleSim = getStringSimilarity(seed._titleBigrams, pool[i]._titleBigrams);
+    if (titleSim >= 0.5) {
+      matches.push(pool.splice(i, 1)[0]);
+      i--;
+    }
+    if (++iterationsRef.count % 100 === 0) await new Promise((r) => setImmediate(r));
+  }
+  return matches;
+}
+
+/**
+ * Processes one extension pool for size duplicates.
+ */
+async function processSizePool(ext, pool) {
+  const results = [];
+  const iterationsRef = { count: 0 };
+  while (pool.length > 0) {
+    const seed = pool.shift();
+    const seedSize = parseFloat(seed.size) || 0;
+    if (seedSize === 0) continue;
+    const matches = await collectSizeMatches(seed, seedSize, pool, iterationsRef);
+    if (matches.length > 1) {
+      results.push(
+        processGroup({
+          key: `Size: ${ext} ~${seedSize}MB`,
+          confidence: "possible",
+          reason: "similar_size",
+          files: matches.map(formatFile),
+        }),
+      );
+    }
+  }
+  return results;
+}
+
+/**
  * Level 4: Similar Size & Format -> possible (Optimized)
  */
 async function detectSizeDuplicates(books, handledPaths, onProgress) {
-  const results = [];
   const available = books.filter((b) => !handledPaths.has(b.location));
   const extGroups = {};
 
@@ -309,61 +366,22 @@ async function detectSizeDuplicates(books, handledPaths, onProgress) {
 
   const extensions = Object.keys(extGroups);
   const totalExts = extensions.length;
+  const results = [];
 
   for (let eIdx = 0; eIdx < totalExts; eIdx++) {
-    const ext = extensions[eIdx];
-    const group = extGroups[ext];
-    const pool = [...group].sort(
-      (a, b) => (parseFloat(a.size) || 0) - (parseFloat(b.size) || 0),
-    );
-    let iterations = 0;
-
     if (onProgress) {
-      onProgress({ 
-        total: totalExts, 
-        current: eIdx, 
-        percent: Math.round((eIdx / totalExts) * 100) 
+      onProgress({
+        total: totalExts,
+        current: eIdx,
+        percent: Math.round((eIdx / totalExts) * 100),
       });
     }
-
-    while (pool.length > 0) {
-      const seed = pool.shift();
-      const seedSize = parseFloat(seed.size) || 0;
-      if (seedSize === 0) continue;
-
-      const matches = [seed];
-      for (let i = 0; i < pool.length; i++) {
-        const compSize = parseFloat(pool[i].size) || 0;
-        
-        // OPTIMIZATION: Since pool is sorted by size, we can break early
-        if (compSize > seedSize * (1 + SIZE_DIFFERENCE_THRESHOLD)) {
-          break;
-        }
-
-        const titleSim = getStringSimilarity(
-          seed._titleBigrams,
-          pool[i]._titleBigrams,
-        );
-        
-        if (titleSim >= 0.5) {
-          matches.push(pool.splice(i, 1)[0]);
-          i--;
-        }
-        
-        if (++iterations % 100 === 0) await new Promise((r) => setImmediate(r));
-      }
-
-      if (matches.length > 1) {
-        results.push(
-          processGroup({
-            key: `Size: ${ext} ~${seedSize}MB`,
-            confidence: "possible",
-            reason: "similar_size",
-            files: matches.map(formatFile),
-          }),
-        );
-      }
-    }
+    const ext = extensions[eIdx];
+    const pool = [...extGroups[ext]].sort(
+      (a, b) => (parseFloat(a.size) || 0) - (parseFloat(b.size) || 0),
+    );
+    const poolResults = await processSizePool(ext, pool);
+    results.push(...poolResults);
   }
   return results;
 }
@@ -372,8 +390,9 @@ async function detectSizeDuplicates(books, handledPaths, onProgress) {
  * Detects duplicates in the book cache.
  */
 async function detectDuplicates(books, onProgress) {
+  console.log("[DuplicateDetector] Starting detectDuplicates scan.");
   const handledPaths = new Set();
-  
+
   // 1. Preparation (0-10%)
   if (onProgress) onProgress({ total: books.length, current: 0, percent: 5 });
 
@@ -400,7 +419,7 @@ async function detectDuplicates(books, onProgress) {
   const fuzzy = await detectFuzzyDuplicates(enhancedBooks, handledPaths, (p) => {
     if (onProgress) onProgress({ ...p, percent: 15 + Math.round((p.percent || 0) * 0.7) });
   });
-  
+
   // 4. ID Match (85-90%)
   const ids = detectIdDuplicates(enhancedBooks, handledPaths);
   if (onProgress) onProgress({ total: 100, current: 90, percent: 90 });
@@ -434,14 +453,15 @@ async function detectDuplicates(books, onProgress) {
   results.stats.totalWastedFormatted = `${(results.stats.totalWastedBytes / BYTES_PER_MB).toFixed(2)} MB`;
 
   if (onProgress) onProgress({ total: 100, current: 100, percent: 100 });
+  console.log("[DuplicateDetector] Finished scan, saving results.");
   await duplicateCache.save(results);
   return results;
 }
 
-module.exports = { 
-  detectDuplicates, 
+module.exports = {
+  detectDuplicates,
   loadCachedDuplicates: duplicateCache.load,
-  clearDuplicateCache: () => fs.unlink(DUPLICATES_CACHE_PATH).catch(() => {}),
+  clearDuplicateCache: () => fs.unlink(DUPLICATES_CACHE_PATH).catch(() => { }),
   duplicateCache,
   calculateWastedBytes,
   recommendFile,
