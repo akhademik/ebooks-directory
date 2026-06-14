@@ -589,11 +589,17 @@ export function renderDuplicateLoading() {
   }
 }
 
-export function updateDuplicateBadge() {
+export function updateDuplicateBadge(count) {
   const badge = EL.duplicateBadge();
   if (!badge) return;
 
-  const total = state.duplicateResults ? state.duplicateResults.stats.totalGroups : 0;
+  let total = 0;
+  if (count !== undefined) {
+    total = count;
+  } else if (state.duplicateResults) {
+    total = state.duplicateResults.stats.totalGroups;
+  }
+
   if (total > 0) {
     badge.textContent = total;
     badge.classList.remove("hidden");
@@ -618,22 +624,22 @@ export function renderDuplicates(append = false) {
   
   const { confirmed, probable, possible, stats } = state.duplicateResults;
   
-  if (!append) {
-    countLabel.textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
-  }
-  
-  if (stats.totalGroups === 0) {
-    empty.classList.add("visible");
-    return;
-  }
-  empty.classList.remove("visible");
-
   // Flatten all groups with metadata for pagination
   const allGroups = [
     ...confirmed.map(g => ({ ...g, type: "Confirmed", badge: "bg-rose-500/10 text-rose-500 border-rose-500/20" })),
     ...probable.map(g => ({ ...g, type: "Probable", badge: "bg-amber-500/10 text-amber-500 border-amber-500/20" })),
     ...possible.map(g => ({ ...g, type: "Possible", badge: "bg-orange-500/10 text-orange-500 border-orange-500/20" }))
   ];
+
+  if (!append) {
+    countLabel.textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
+  }
+  
+  if (allGroups.length === 0) {
+    empty.classList.add("visible");
+    return;
+  }
+  empty.classList.remove("visible");
 
   const start = (state.duplicatesPage - 1) * DUPLICATE_GROUPS_PER_PAGE;
   const end = state.duplicatesPage * DUPLICATE_GROUPS_PER_PAGE;
@@ -704,7 +710,13 @@ function createDuplicateFileRow(file) {
   const fileName = pathParts.pop() || "Unnamed File";
   const dirPath = pathParts.length > 0 ? pathParts.join("/") + "/" : "./";
 
-  const bgClass = isRec ? "bg-emerald-500/5 border-emerald-500/20" : "border-white/5";
+  let bgClass = "border-white/5";
+  if (isDeleted) {
+    bgClass = "bg-rose-500/5 border-rose-500/20";
+  } else if (isRec) {
+    bgClass = "bg-emerald-500/5 border-emerald-500/20";
+  }
+
   const titleColor = getFileTitleColor(isDeleted, isRec);
   const badgeHtml = isRec ? getRecommendedBadgeHtml() : "";
   const ext = (file.ext || "").toUpperCase();

@@ -358,17 +358,9 @@ async function executeDelete() {
 
 function handleSuccessfulDelete(location) {
   addDeletedInSession(location);
-  const elementId = `dup-${btoa(encodeURIComponent(location)).replace(/=/g, "")}`;
-  const rowEl = document.getElementById(elementId);
-  if (!rowEl) return;
-
-  rowEl.classList.add("deleted-file");
-  const btn = rowEl.querySelector(".delete-file-btn");
-  if (btn) {
-    btn.disabled = true;
-    btn.className = "px-3 py-1.5 rounded-lg delete-file-btn deleted";
-    btn.innerHTML = '<i class="fas fa-check mr-1"></i> Deleted';
-  }
+  // Instead of manual DOM manipulation, simply re-render the duplicate view.
+  // The rendering logic will now automatically pick up the path from deletedInSession.
+  renderDuplicates();
 }
 
 async function refreshDataAfterDelete() {
@@ -379,11 +371,21 @@ async function refreshDataAfterDelete() {
   // We just need to fetch the updated results without triggering a new scan.
   try {
     const updatedResults = await fetchDuplicatesApi();
-    setDuplicateResults(updatedResults);
+    const freshCount = updatedResults.stats.totalGroups;
+    
+    // BUG FIX: If we are currently showing duplicates, do NOT overwrite the full results
+    // because that would cause deleted files to vanish immediately.
+    if (!state.isShowingDuplicates) {
+      setDuplicateResults(updatedResults);
+    }
+    
+    // Always re-render if showing duplicates (it will use the old results but new deletedInSession)
     if (state.isShowingDuplicates) {
       renderDuplicates();
     }
-    updateDuplicateBadge();
+    
+    // Update badge with the fresh count from server
+    updateDuplicateBadge(freshCount);
   } catch (err) {
     console.error("Error updating duplicates after delete:", err);
   }
