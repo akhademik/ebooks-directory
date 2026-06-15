@@ -1,5 +1,10 @@
 node_modules/
 .env
+.env.docker
+.env.*
+!.env.sample
+!.env.example
+!.env.docker.sample
 gen-lang-client-*.json
 return.html
 
