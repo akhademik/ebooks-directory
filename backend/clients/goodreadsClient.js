@@ -62,7 +62,7 @@ function calculateTitleSimilarity(queryTitle, candidateTitle) {
  */
 function isAuthorMatch(expectedAuthor, candidateAuthor) {
   if (!expectedAuthor || !candidateAuthor) return true;
-  
+
   const expectedWords = cleanSearchQuery(expectedAuthor).split(/\s+/).filter(Boolean);
   if (!expectedWords.length) return true;
 
@@ -133,7 +133,7 @@ async function findBookUrl(page, searchUrl, options) {
 async function extractBookMetadata(page) {
   return await page.evaluate(() => {
     const getElementText = (selector) => document.querySelector(selector)?.innerText?.trim() || "";
-    
+
     const title = getElementText('h1[data-testid="bookTitle"]') || getElementText("#bookTitle");
     const author = getElementText(".ContributorLink__name") || getElementText(".authorName") || getElementText('[data-testid="name"]');
     const ratingText = getElementText(".RatingStatistics__rating") || getElementText('[itemprop="ratingValue"]');
@@ -168,7 +168,7 @@ async function extractBookMetadata(page) {
  */
 async function searchForBookUrl(page, { title, author }) {
   const options = { expectedTitle: title, expectedAuthor: author, threshold: SIMILARITY_THRESHOLD };
-  
+
   // Strategy 1: Title + Author
   const fullQuery = encodeURIComponent(`${cleanSearchQuery(title)} ${cleanSearchQuery(author)}`);
   let url = await findBookUrl(page, `https://www.goodreads.com/search?q=${fullQuery}`, options);
@@ -182,17 +182,31 @@ async function searchForBookUrl(page, { title, author }) {
 /**
  * Main function to fetch book metadata from Goodreads.
  */
-async function fetchMetadata(title, author = "", goodreadsId = "") {
-  const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+const PUPPETEER_USER_DATA_DIR = process.env.PUPPETEER_USER_DATA_DIR;
+
+// Queue để đảm bảo chỉ 1 Puppeteer instance chạy tại 1 thời điểm
+let queue = Promise.resolve();
+
+async function _fetchMetadata(title, author = "", goodreadsId = "") {
+  let browser = null;
 
   try {
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      userDataDir: PUPPETEER_USER_DATA_DIR,
+    });
 
-    let bookUrl = goodreadsId ? `https://www.goodreads.com/book/show/${goodreadsId}` : await searchForBookUrl(page, { title, author });
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    );
+
+    let bookUrl = goodreadsId
+      ? `https://www.goodreads.com/book/show/${goodreadsId}`
+      : await searchForBookUrl(page, { title, author });
 
     if (!bookUrl) {
-      await browser.close();
       return { notFound: true, searchedTitle: title, searchedAuthor: author };
     }
 
@@ -202,14 +216,21 @@ async function fetchMetadata(title, author = "", goodreadsId = "") {
 
     await page.waitForSelector('h1[data-testid="bookTitle"]', { timeout: 15000 }).catch(() => null);
     const metadata = await extractBookMetadata(page);
-    
-    await browser.close();
+
     return metadata;
   } catch (error) {
     console.error(`[GoodreadsClient] Error: ${error.message}`);
-    await browser.close();
     return null;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
+}
+
+function fetchMetadata(title, author = "", goodreadsId = "") {
+  queue = queue.then(() => _fetchMetadata(title, author, goodreadsId));
+  return queue;
 }
 
 module.exports = { fetchMetadata, calculateTitleSimilarity, cleanSearchQuery };

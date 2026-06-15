@@ -28,4 +28,4 @@ COPY frontend/ ./frontend/
 RUN mkdir -p backend/storage
 
 EXPOSE 3000
-CMD ["/bin/sh", "-c", "rm -f /app/backend/storage/*.json && node backend/server.js"]
+CMD ["/bin/sh", "-c", "rm -f /app/core && rm -f /app/backend/storage/*.json && node backend/server.js"]

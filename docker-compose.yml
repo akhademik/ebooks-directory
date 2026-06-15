@@ -1,6 +1,7 @@
 services:
   ebook-manager:
     build: .
+    image: hajtran/ebooks-directory:latest
     container_name: ebook-manager
     restart: always
     ports:
@@ -11,8 +12,6 @@ services:
       - ${NAS_PATH}:/books
     environment:
       - BOOKS_PATH=/books
-      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
-      - GOOGLE_SERVICE_ACCOUNT_EMAIL=${GOOGLE_SERVICE_ACCOUNT_EMAIL}
-      - GOOGLE_PRIVATE_KEY=${GOOGLE_PRIVATE_KEY}
+      - PUPPETEER_USER_DATA_DIR=/tmp/puppeteer_profile
       - LANG=C.UTF-8
       - LC_ALL=C.UTF-8
