@@ -98,8 +98,8 @@ async function startEnrichmentWorker(config) {
   while (isContextValid(scanId)) {
     const books = await getBooks();
     const pending = books.filter(b => {
-      const check = (b.goodreadsCheck || "").toLowerCase();
-      return check === "no" || (b.goodreadsId && b.source === "Filename Parser");
+      const check = (b.goodreadsCheck || "").trim().toLowerCase();
+      return check === "no";
     });
 
     state.enrichment.total = pending.length;
