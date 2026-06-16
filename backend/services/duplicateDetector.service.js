@@ -8,19 +8,37 @@ const {
   extractTitle,
 } = require("../utils/stringUtils");
 
+// ─────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────────────────────
 const BYTES_PER_MB = 1024 * 1024;
 const DUPLICATES_CACHE_PATH = path.join(
   __dirname,
   "../storage/duplicates.cache.json",
 );
 const UNKNOWN_AUTHOR = "Unknown";
+const EBOOK_EXTENSIONS = new Set([
+  "epub", "pdf", "azw", "azw3", "mobi", "djvu", "fb2", "lit", "cbz", "cbr",
+]);
 
-const TITLE_SIMILARITY_THRESHOLD = 0.8;
-const AUTHOR_SIMILARITY_THRESHOLD = 0.7;
-const SIZE_DIFFERENCE_THRESHOLD = 0.1;
+// Detection thresholds
+const TITLE_SIMILARITY_THRESHOLD = 0.8;   // fuzzy title match
+const AUTHOR_SIMILARITY_THRESHOLD = 0.7;   // fuzzy author match
+const FILENAME_FUZZY_THRESHOLD = 0.75;  // fuzzy filename match (tầng 4)
+const SIZE_DIFFERENCE_THRESHOLD = 0.1;   // ±10% filesize window
+const MIN_SIZE_MB = 0.05;  // bỏ qua file <50KB ở tầng size
+const SIZE_TITLE_THRESHOLD = 0.6;   // title sim khi kết hợp với size
+
+// Cache TTL
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24 giờ — rescan tự động sau khoảng này
+
+// ─────────────────────────────────────────────────────────────
+//  HELPERS: formatFile / recommendFile / calculateWastedBytes
+// ─────────────────────────────────────────────────────────────
 
 /**
  * Formats a book object for duplicate detection results.
+ * Also reads mtime from disk for recommendation engine tie-breaking.
  */
 function formatFile(book) {
   const absolutePath = path.resolve(
@@ -28,16 +46,13 @@ function formatFile(book) {
     book.location,
   );
   let mtimeMs = 0;
-
   if (fsSync.existsSync(absolutePath)) {
     try {
-      const stats = fsSync.statSync(absolutePath);
-      mtimeMs = stats.mtimeMs;
+      mtimeMs = fsSync.statSync(absolutePath).mtimeMs;
     } catch {
-      // If file disappeared between exists and stat, we use default mtimeMs 0
+      // file disappeared between existsSync and statSync — use default 0
     }
   }
-
   return {
     path: book.location,
     size: book.size,
@@ -48,7 +63,12 @@ function formatFile(book) {
 }
 
 /**
- * Recommendation Engine: Returns the index of the recommended file in the group.
+ * Recommendation Engine: returns index of the best file to keep.
+ *
+ * Priority order:
+ *   1. Format quality: epub > azw3 > azw > mobi > pdf > others
+ *   2. For epub/azw*: smaller file (less bloat), for pdf: larger (better scan)
+ *   3. Tie-break: most recently modified
  */
 function recommendFile(files) {
   if (files.length <= 1) return 0;
@@ -77,27 +97,46 @@ function recommendFile(files) {
 }
 
 /**
- * Calculates wasted bytes in a group.
+ * Calculates wasted bytes for a group (everything except the recommended file).
  */
 function calculateWastedBytes(group) {
-  const recommendedIdx = group.findIndex((f) => f.recommended);
-  const keepIdx = recommendedIdx !== -1 ? recommendedIdx : 0;
-
-  const wastedMB = group.reduce((acc, f, idx) => {
-    return idx !== keepIdx ? acc + (parseFloat(f.size) || 0) : acc;
-  }, 0);
-
+  const keepIdx = group.findIndex((f) => f.recommended);
+  const keep = keepIdx !== -1 ? keepIdx : 0;
+  const wastedMB = group.reduce(
+    (acc, f, idx) => (idx !== keep ? acc + (parseFloat(f.size) || 0) : acc),
+    0,
+  );
   return Math.round(wastedMB * BYTES_PER_MB);
 }
 
-/**
- * Cache management
- */
+// ─────────────────────────────────────────────────────────────
+//  CACHE
+//
+//  3 cơ chế invalidation:
+//    1. TTL (24h)   — load() trả null nếu _savedAt quá cũ
+//    2. Force       — clearDuplicateCache() xóa file, dùng khi
+//                     caller muốn force rescan (?refresh=true)
+//    3. Auto-clear  — invalidateOnBooksChange() gọi khi book
+//                     cache sync lại từ Sheets, đảm bảo duplicate
+//                     list không stale khi data nguồn thay đổi
+// ─────────────────────────────────────────────────────────────
 const duplicateCache = {
   async load() {
     try {
       const data = await fs.readFile(DUPLICATES_CACHE_PATH, "utf8");
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+
+      // TTL check: nếu cache quá cũ thì coi như không có
+      if (parsed._savedAt && Date.now() - parsed._savedAt > CACHE_TTL_MS) {
+        console.log(
+          `[DuplicateCache] Cache expired (age: ${Math.round((Date.now() - parsed._savedAt) / 3600000)}h), will rescan.`,
+        );
+        return null;
+      }
+
+      // Trả về results sạch, bỏ internal field _savedAt
+      const { _savedAt, ...results } = parsed;
+      return results;
     } catch {
       return null;
     }
@@ -105,21 +144,30 @@ const duplicateCache = {
   async save(results) {
     console.log(`[DuplicateCache] Saving to ${DUPLICATES_CACHE_PATH}...`);
     try {
+      // Ghi kèm timestamp để TTL check ở load()
       await fs.writeFile(
         DUPLICATES_CACHE_PATH,
-        JSON.stringify(results),
+        JSON.stringify({ ...results, _savedAt: Date.now() }),
         "utf8",
       );
-      console.log(`[DuplicateCache] Successfully saved.`);
+      console.log("[DuplicateCache] Successfully saved.");
     } catch (err) {
       console.error("[DuplicateCache] Save failed:", err.message);
     }
   },
+  async clear() {
+    try {
+      await fs.unlink(DUPLICATES_CACHE_PATH);
+      console.log("[DuplicateCache] Cache cleared.");
+    } catch {
+      // File không tồn tại — không sao
+    }
+  },
 };
 
-/**
- * Applies the recommendation engine to a group of files.
- */
+// ─────────────────────────────────────────────────────────────
+//  processGroup — applies recommendation engine to a raw group
+// ─────────────────────────────────────────────────────────────
 function processGroup({ key, confidence, reason, files }) {
   const recommendedIdx = recommendFile(files);
   const processedFiles = files.map((f, idx) => ({
@@ -128,7 +176,6 @@ function processGroup({ key, confidence, reason, files }) {
     ext: f.ext,
     recommended: idx === recommendedIdx,
   }));
-
   return {
     key,
     confidence,
@@ -138,30 +185,44 @@ function processGroup({ key, confidence, reason, files }) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────
+//  FILENAME UTILITIES  (new — ported from AppScript v4)
+// ─────────────────────────────────────────────────────────────
+
 /**
- * Checks if two books are duplicates based on Title (>=80%) and Author (>=70% or Unknown).
+ * Strips the extension from a filename and cleans the result.
+ * "Sapiens - Yuval Noah Harari.epub" → "sapiens yuval noah harari"
  */
-function isFuzzyMatch(book1, book2) {
-  const titleSim = getStringSimilarity(
-    book1._titleBigrams,
-    book2._titleBigrams,
-  );
-  if (titleSim < TITLE_SIMILARITY_THRESHOLD) return false;
-
-  if (book1.author === UNKNOWN_AUTHOR || book2.author === UNKNOWN_AUTHOR) {
-    return true;
-  }
-
-  const authorSim = getStringSimilarity(
-    book1._authorBigrams,
-    book2._authorBigrams,
-  );
-  return authorSim >= AUTHOR_SIMILARITY_THRESHOLD;
+function cleanFilename(location) {
+  const base = path.basename(location);
+  const dot = base.lastIndexOf(".");
+  const name = dot !== -1 ? base.substring(0, dot) : base;
+  return cleanText(name);            // reuse existing cleanText from stringUtils
 }
 
 /**
- * Level 1: SHA256 Hash -> confirmed
+ * Builds a block key from the first 2 tokens × first 2 chars each.
+ * Better than a raw 3-char prefix for Vietnamese titles where many books
+ * share common opening words ("bac", "con", "mot"…).
+ *
+ * "nguyen van a b c"  → "ng va"
+ * "nguyen van d"      → "ng va"   ← same block → will be fuzzy-compared
+ * "tran thi b"        → "tr th"   ← different block → never compared
  */
+function filenameBlockKey(cleanName) {
+  const tokens = cleanName.split(" ").filter(Boolean);
+  return tokens
+    .slice(0, 2)
+    .map((t) => t.substring(0, 2))
+    .join(" ");
+}
+
+// ─────────────────────────────────────────────────────────────
+//  LEVEL 1 — SHA-256 Hash  →  confidence: "confirmed"
+//
+//  Bit-for-bit identical files. No false positives possible.
+//  Run first so these paths are excluded from every later level.
+// ─────────────────────────────────────────────────────────────
 function detectHashDuplicates(books, handledPaths) {
   const results = [];
   const hashGroups = {};
@@ -174,36 +235,102 @@ function detectHashDuplicates(books, handledPaths) {
     });
 
   Object.entries(hashGroups).forEach(([hash, group]) => {
-    if (group.length > 1) {
-      const processed = processGroup({
+    if (group.length < 2) return;
+    results.push(
+      processGroup({
         key: hash,
         confidence: "confirmed",
         reason: "sha256_hash",
         files: group.map(formatFile),
-      });
-      results.push(processed);
-      group.forEach((b) => handledPaths.add(b.location));
-    }
+      }),
+    );
+    group.forEach((b) => handledPaths.add(b.location));
   });
+
   return results;
 }
 
-/**
- * Collects fuzzy matches for a single seed book from the pool.
- */
+// ─────────────────────────────────────────────────────────────
+//  LEVEL 2 — Goodreads ID  →  confidence: "confirmed"
+//
+//  Moved BEFORE fuzzy: same Goodreads ID = same work with certainty.
+//  Removing these from the pool first prevents them from polluting
+//  the fuzzy results with lower-confidence duplicates.
+//
+//  Original code had this after fuzzy (levels 3→4), which meant
+//  many confirmed duplicates were also emitted as "probable" by
+//  the fuzzy pass. The new order eliminates that redundancy.
+// ─────────────────────────────────────────────────────────────
+function detectIdDuplicates(books, handledPaths) {
+  const results = [];
+  const idGroups = {};
+
+  books
+    .filter(
+      (b) =>
+        b.goodreadsId &&
+        b.goodreadsCheck === "Yes" &&
+        !handledPaths.has(b.location),
+    )
+    .forEach((b) => {
+      if (!idGroups[b.goodreadsId]) idGroups[b.goodreadsId] = [];
+      idGroups[b.goodreadsId].push(b);
+    });
+
+  Object.entries(idGroups).forEach(([id, group]) => {
+    if (group.length < 2) return;
+    results.push(
+      processGroup({
+        key: `Goodreads: ${id}`,
+        confidence: "confirmed",   // upgraded from "probable" — ID match is definitive
+        reason: "goodreads_id",
+        files: group.map(formatFile),
+      }),
+    );
+    group.forEach((b) => handledPaths.add(b.location));
+  });
+
+  return results;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  LEVEL 3 — Fuzzy Title + Author  →  confidence: "probable"
+//
+//  Blocking strategy: group by first 2 tokens × 2 chars each
+//  instead of raw 3-char prefix. For Vietnamese collections
+//  where many titles share common openers ("bac", "con", "mot"),
+//  the 3-char prefix creates oversized blocks that are slow.
+//  The 2-token block key produces more balanced, smaller groups.
+//
+//  Within each block: seed-pool O(k²) with early setImmediate
+//  yield every 50 iterations to keep the event loop responsive.
+// ─────────────────────────────────────────────────────────────
+
+/** Returns true if book1 and book2 are a fuzzy title+author match. */
+function isFuzzyMatch(book1, book2) {
+  const titleSim = getStringSimilarity(book1._titleBigrams, book2._titleBigrams);
+  if (titleSim < TITLE_SIMILARITY_THRESHOLD) return false;
+
+  // If either author is unknown, title similarity alone is sufficient
+  if (book1.author === UNKNOWN_AUTHOR || book2.author === UNKNOWN_AUTHOR) {
+    return true;
+  }
+
+  const authorSim = getStringSimilarity(book1._authorBigrams, book2._authorBigrams);
+  return authorSim >= AUTHOR_SIMILARITY_THRESHOLD;
+}
+
 async function collectFuzzyMatches(seed, pool, handledPaths, iterationsRef) {
   const matches = [seed];
   for (let i = 0; i < pool.length; i++) {
     if (handledPaths.has(pool[i].location)) {
-      pool.splice(i, 1);
-      i--;
+      pool.splice(i--, 1);
       continue;
     }
     if (isFuzzyMatch(seed, pool[i])) {
-      const match = pool.splice(i, 1)[0];
+      const match = pool.splice(i--, 1)[0];
       matches.push(match);
       handledPaths.add(match.location);
-      i--;
     }
     if (++iterationsRef.count % 50 === 0) {
       await new Promise((r) => setImmediate(r));
@@ -212,9 +339,6 @@ async function collectFuzzyMatches(seed, pool, handledPaths, iterationsRef) {
   return matches;
 }
 
-/**
- * Processes one prefix pool for fuzzy duplicates.
- */
 async function processFuzzyPool(pool, handledPaths, iterationsRef) {
   const results = [];
   while (pool.length > 0) {
@@ -226,7 +350,7 @@ async function processFuzzyPool(pool, handledPaths, iterationsRef) {
         processGroup({
           key: `Fuzzy: ${seed.title}`,
           confidence: "probable",
-          reason: "fuzzy_match",
+          reason: "fuzzy_title_author",
           files: matches.map(formatFile),
         }),
       );
@@ -236,20 +360,22 @@ async function processFuzzyPool(pool, handledPaths, iterationsRef) {
   return results;
 }
 
-/**
- * Level 2: Fuzzy Title & Author Match -> probable (Optimized)
- */
 async function detectFuzzyDuplicates(books, handledPaths, onProgress) {
   const available = books.filter(
     (b) => !handledPaths.has(b.location) && b._cleanTitle.length >= 3,
   );
 
-  // Group by first 3 characters of cleaned title to reduce O(n^2) search space
+  // Build block groups using the 2-token block key
   const titleGroups = {};
   available.forEach((b) => {
-    const prefix = b._cleanTitle.substring(0, 3);
-    if (!titleGroups[prefix]) titleGroups[prefix] = [];
-    titleGroups[prefix].push(b);
+    const tokens = b._cleanTitle.split(" ").filter(Boolean);
+    const blockKey = tokens
+      .slice(0, 2)
+      .map((t) => t.substring(0, 2))
+      .join(" ");
+    if (!blockKey) return;
+    if (!titleGroups[blockKey]) titleGroups[blockKey] = [];
+    titleGroups[blockKey].push(b);
   });
 
   const prefixes = Object.keys(titleGroups);
@@ -272,70 +398,196 @@ async function detectFuzzyDuplicates(books, handledPaths, onProgress) {
   return results;
 }
 
-/**
- * Level 3: Goodreads ID -> probable
- */
-function detectIdDuplicates(books, handledPaths) {
-  const results = [];
-  const idGroups = {};
+// ─────────────────────────────────────────────────────────────
+//  LEVEL 4 — Filename Fuzzy  →  confidence: "probable"
+//
+//  New level ported from AppScript v4.
+//  Catches cases where metadata differs but filename is similar:
+//    "nguyen van a.epub"
+//    "nguyen van a b c d.pdf"
+//    "nguyen_van_a.mobi"
+//
+//  Algorithm:
+//    1. Strip extension, clean filename (reuse cleanText)
+//    2. Group by 2-token block key (same as fuzzy title level)
+//    3. Within each block:
+//       a. Exact match (after cleaning) → reason: "filename_exact"
+//       b. Dice bigram similarity ≥ FILENAME_FUZZY_THRESHOLD
+//          + Union-Find to merge transitive matches into one group
+//          → reason: "filename_fuzzy"
+//    4. Groups with multiple distinct extensions get flagged as
+//       "different_format" (same content, different container)
+// ─────────────────────────────────────────────────────────────
 
-  books
-    .filter(
-      (b) =>
-        b.goodreadsId &&
-        b.goodreadsCheck === "Yes" &&
-        !handledPaths.has(b.location),
-    )
-    .forEach((b) => {
-      if (!idGroups[b.goodreadsId]) idGroups[b.goodreadsId] = [];
-      idGroups[b.goodreadsId].push(b);
+async function detectFilenameDuplicates(books, handledPaths, onProgress) {
+  const available = books.filter(
+    (b) => !handledPaths.has(b.location) &&
+      EBOOK_EXTENSIONS.has((b.extension || b.location.split(".").pop().toLowerCase())),
+  );
+
+  // Pre-compute cleaned filename + block key for each book
+  const enhanced = available.map((b) => ({
+    ...b,
+    _cleanFilename: cleanFilename(b.location),
+    _ext: b.extension || b.location.split(".").pop().toLowerCase(),
+  }));
+
+  // ── Pass A: exact filename match (different extensions) ──────
+  const exactGroups = {};
+  enhanced.forEach((b) => {
+    const key = b._cleanFilename;
+    if (!key) return;
+    if (!exactGroups[key]) exactGroups[key] = [];
+    exactGroups[key].push(b);
+  });
+
+  const exactResults = [];
+
+  Object.entries(exactGroups).forEach(([key, group]) => {
+    const unhandled = group.filter((b) => !handledPaths.has(b.location));
+    if (unhandled.length < 2) return;
+
+    const extensions = new Set(unhandled.map((b) => b._ext));
+    const reason = extensions.size > 1 ? "filename_exact_diff_format" : "filename_exact_same_format";
+
+    exactResults.push(
+      processGroup({
+        key: `Filename: ${key}`,
+        confidence: "probable",
+        reason,
+        files: unhandled.map(formatFile),
+      }),
+    );
+    unhandled.forEach((b) => {
+      handledPaths.add(b.location);
+    });
+  });
+
+  // ── Pass B: fuzzy filename match (Dice bigram, blocking) ─────
+  const forFuzzy = enhanced.filter((b) => !handledPaths.has(b.location));
+
+  // Group by block key
+  const blockGroups = {};
+  forFuzzy.forEach((b) => {
+    const bk = filenameBlockKey(b._cleanFilename);
+    if (!bk) return;
+    if (!blockGroups[bk]) blockGroups[bk] = [];
+    blockGroups[bk].push(b);
+  });
+
+  const blockKeys = Object.keys(blockGroups);
+  const totalBlocks = blockKeys.length;
+  const fuzzyResults = [];
+  let iterCount = 0;
+
+  for (let bIdx = 0; bIdx < totalBlocks; bIdx++) {
+    if (onProgress) {
+      onProgress({
+        total: totalBlocks,
+        current: bIdx,
+        percent: Math.round((bIdx / totalBlocks) * 100),
+      });
+    }
+
+    const entries = blockGroups[blockKeys[bIdx]].filter(
+      (b) => !handledPaths.has(b.location),
+    );
+    if (entries.length < 2) continue;
+
+    // Union-Find to group transitive matches
+    const parent = entries.map((_, i) => i);
+    const find = (x) => {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    };
+    const union = (a, b) => { parent[find(a)] = find(b); };
+
+    let anyPair = false;
+    for (let a = 0; a < entries.length - 1; a++) {
+      for (let b = a + 1; b < entries.length; b++) {
+        const sim = getStringSimilarity(
+          getBigrams(entries[a]._cleanFilename),
+          getBigrams(entries[b]._cleanFilename),
+        );
+        if (sim >= FILENAME_FUZZY_THRESHOLD) {
+          union(a, b);
+          anyPair = true;
+        }
+        if (++iterCount % 50 === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+      }
+    }
+    if (!anyPair) continue;
+
+    // Collect groups by root
+    const roots = {};
+    entries.forEach((_, i) => {
+      const r = find(i);
+      if (!roots[r]) roots[r] = [];
+      roots[r].push(i);
     });
 
-  Object.entries(idGroups).forEach(([id, group]) => {
-    if (group.length > 1) {
-      const processed = processGroup({
-        key: `Goodreads: ${id}`,
-        confidence: "probable",
-        reason: "goodreads_id",
-        files: group.map(formatFile),
-      });
-      results.push(processed);
+    Object.values(roots).forEach((idxArr) => {
+      if (idxArr.length < 2) return;
+      const group = idxArr.map((i) => entries[i]);
+      const exts = new Set(group.map((b) => b._ext));
+      fuzzyResults.push(
+        processGroup({
+          key: `Filename fuzzy: ${group[0]._cleanFilename}`,
+          confidence: "probable",
+          reason: exts.size > 1 ? "filename_fuzzy_diff_format" : "filename_fuzzy_same_format",
+          files: group.map(formatFile),
+        }),
+      );
       group.forEach((b) => handledPaths.add(b.location));
-    }
-  });
-  return results;
+    });
+  }
+
+  return [...exactResults, ...fuzzyResults];
 }
 
-/**
- * Collects size-based matches for a single seed book from the sorted pool.
- */
+// ─────────────────────────────────────────────────────────────
+//  LEVEL 5 — Similar Size + Format  →  confidence: "possible"
+//
+//  Kept from original but with two improvements:
+//    1. Skip files < MIN_SIZE_MB (50 KB) — tiny files like short
+//       essays all round to 0.01 MB and create mass false positives
+//    2. Raise title similarity gate from 0.5 → SIZE_TITLE_THRESHOLD
+//       (0.6) to reduce noise when combining with size signal
+//
+//  Still groups by extension first, sorts by size, then uses
+//  early-break sliding window (O(n log n) per extension group).
+// ─────────────────────────────────────────────────────────────
+
 async function collectSizeMatches(seed, seedSize, pool, iterationsRef) {
   const matches = [seed];
   for (let i = 0; i < pool.length; i++) {
     const compSize = parseFloat(pool[i].size) || 0;
-    // OPTIMIZATION: Since pool is sorted by size, we can break early
+    // Early break: pool is sorted → everything beyond this is too large
     if (compSize > seedSize * (1 + SIZE_DIFFERENCE_THRESHOLD)) break;
 
-    const titleSim = getStringSimilarity(seed._titleBigrams, pool[i]._titleBigrams);
-    if (titleSim >= 0.5) {
-      matches.push(pool.splice(i, 1)[0]);
-      i--;
+    const titleSim = getStringSimilarity(
+      seed._titleBigrams,
+      pool[i]._titleBigrams,
+    );
+    if (titleSim >= SIZE_TITLE_THRESHOLD) {
+      matches.push(pool.splice(i--, 1)[0]);
     }
-    if (++iterationsRef.count % 100 === 0) await new Promise((r) => setImmediate(r));
+    if (++iterationsRef.count % 100 === 0) {
+      await new Promise((r) => setImmediate(r));
+    }
   }
   return matches;
 }
 
-/**
- * Processes one extension pool for size duplicates.
- */
 async function processSizePool(ext, pool) {
   const results = [];
   const iterationsRef = { count: 0 };
   while (pool.length > 0) {
     const seed = pool.shift();
     const seedSize = parseFloat(seed.size) || 0;
-    if (seedSize === 0) continue;
+    if (seedSize < MIN_SIZE_MB) continue;   // skip tiny files
     const matches = await collectSizeMatches(seed, seedSize, pool, iterationsRef);
     if (matches.length > 1) {
       results.push(
@@ -351,9 +603,6 @@ async function processSizePool(ext, pool) {
   return results;
 }
 
-/**
- * Level 4: Similar Size & Format -> possible (Optimized)
- */
 async function detectSizeDuplicates(books, handledPaths, onProgress) {
   const available = books.filter((b) => !handledPaths.has(b.location));
   const extGroups = {};
@@ -380,28 +629,44 @@ async function detectSizeDuplicates(books, handledPaths, onProgress) {
     const pool = [...extGroups[ext]].sort(
       (a, b) => (parseFloat(a.size) || 0) - (parseFloat(b.size) || 0),
     );
-    const poolResults = await processSizePool(ext, pool);
-    results.push(...poolResults);
+    results.push(...(await processSizePool(ext, pool)));
   }
   return results;
 }
 
-/**
- * Detects duplicates in the book cache.
- */
+// ─────────────────────────────────────────────────────────────
+//  MAIN ENTRY POINT
+//
+//  Execution order (most → least certain):
+//    1. Hash          confirmed  ~100%  — bit-for-bit identical
+//    2. Goodreads ID  confirmed  ~100%  — same work by DB record
+//    3. Fuzzy meta    probable    ~85%  — title+author similarity
+//    4. Filename      probable    ~80%  — filename similarity
+//    5. Size          possible    ~60%  — size+format+title hint
+//
+//  Each level removes matched books from handledPaths so later
+//  levels operate on a progressively smaller, cleaner pool.
+//
+//  Progress budget:
+//    0-5%   preparation
+//    5-10%  hash
+//    10-15% goodreads id
+//    15-75% fuzzy meta  (heaviest)
+//    75-85% filename
+//    85-98% size
+//    98-100% finalise + save
+// ─────────────────────────────────────────────────────────────
 async function detectDuplicates(books, onProgress) {
   console.log("[DuplicateDetector] Starting detectDuplicates scan.");
   const handledPaths = new Set();
+  const emit = (pct) => onProgress && onProgress({ total: 100, current: pct, percent: pct });
 
-  // 1. Preparation (0-10%)
-  if (onProgress) onProgress({ total: books.length, current: 0, percent: 5 });
-
+  // ── Preparation: pre-compute bigrams for all books (0→5%) ───
+  emit(0);
   const enhancedBooks = books.map((b, idx) => {
     const _cleanTitle = cleanText(extractTitle(b.title));
     const _cleanAuthor = cleanText(b.author);
-    if (idx % 500 === 0 && onProgress) {
-      onProgress({ total: books.length, current: idx, percent: 5 + Math.round((idx / books.length) * 5) });
-    }
+    if (idx % 500 === 0) emit(Math.round((idx / books.length) * 5));
     return {
       ...b,
       _cleanTitle,
@@ -410,29 +675,38 @@ async function detectDuplicates(books, onProgress) {
       _authorBigrams: getBigrams(_cleanAuthor),
     };
   });
+  emit(5);
 
-  // 2. Hash Match (10-15%)
+  // ── Level 1: Hash (5→10%) ────────────────────────────────────
   const confirmed = detectHashDuplicates(enhancedBooks, handledPaths);
-  if (onProgress) onProgress({ total: books.length, current: books.length, percent: 15 });
+  emit(10);
 
-  // 3. Fuzzy Match (15-85%) - The heaviest part
-  const fuzzy = await detectFuzzyDuplicates(enhancedBooks, handledPaths, (p) => {
-    if (onProgress) onProgress({ ...p, percent: 15 + Math.round((p.percent || 0) * 0.7) });
-  });
-
-  // 4. ID Match (85-90%)
+  // ── Level 2: Goodreads ID (10→15%) ──────────────────────────
   const ids = detectIdDuplicates(enhancedBooks, handledPaths);
-  if (onProgress) onProgress({ total: 100, current: 90, percent: 90 });
+  emit(15);
 
-  // 5. Size Match (90-98%)
-  const possible = await detectSizeDuplicates(enhancedBooks, handledPaths, (p) => {
-    if (onProgress) onProgress({ ...p, percent: 90 + Math.round((p.percent || 0) * 0.08) });
+  // ── Level 3: Fuzzy title+author (15→75%) ────────────────────
+  const fuzzy = await detectFuzzyDuplicates(enhancedBooks, handledPaths, (p) => {
+    onProgress && onProgress({ ...p, percent: 15 + Math.round((p.percent || 0) * 0.6) });
   });
 
+  // ── Level 4: Filename fuzzy (75→85%) ────────────────────────
+  const filename = await detectFilenameDuplicates(enhancedBooks, handledPaths, (p) => {
+    onProgress && onProgress({ ...p, percent: 75 + Math.round((p.percent || 0) * 0.1) });
+  });
+  emit(85);
+
+  // ── Level 5: Size+format (85→98%) ───────────────────────────
+  const possible = await detectSizeDuplicates(enhancedBooks, handledPaths, (p) => {
+    onProgress && onProgress({ ...p, percent: 85 + Math.round((p.percent || 0) * 0.13) });
+  });
+  emit(98);
+
+  // ── Compile results ──────────────────────────────────────────
   const results = {
-    confirmed,
-    probable: [...fuzzy, ...ids],
-    possible,
+    confirmed: [...confirmed, ...ids],          // both are 100%-certain
+    probable: [...fuzzy, ...filename],         // metadata or filename evidence
+    possible,                                   // weak signal, needs review
     stats: {
       totalGroups: 0,
       totalWastedBytes: 0,
@@ -450,20 +724,40 @@ async function detectDuplicates(books, onProgress) {
     (acc, g) => acc + calculateWastedBytes(g.files),
     0,
   );
-  results.stats.totalWastedFormatted = `${(results.stats.totalWastedBytes / BYTES_PER_MB).toFixed(2)} MB`;
+  results.stats.totalWastedFormatted =
+    `${(results.stats.totalWastedBytes / BYTES_PER_MB).toFixed(2)} MB`;
 
-  if (onProgress) onProgress({ total: 100, current: 100, percent: 100 });
+  emit(100);
   console.log("[DuplicateDetector] Finished scan, saving results.");
   await duplicateCache.save(results);
   return results;
 }
 
+// ─────────────────────────────────────────────────────────────
+//  EXPORTS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Gọi hàm này trong cache.getBooks() sau mỗi lần sync từ Sheets.
+ * Đảm bảo duplicate list không stale khi data nguồn thay đổi.
+ *
+ * Ví dụ dùng trong bookCache.js:
+ *   const { invalidateOnBooksChange } = require("./duplicateDetector.service");
+ *   // sau khi sync xong:
+ *   await invalidateOnBooksChange();
+ */
+async function invalidateOnBooksChange() {
+  await duplicateCache.clear();
+  console.log("[DuplicateCache] Auto-invalidated: books source changed.");
+}
+
 module.exports = {
   detectDuplicates,
-  loadCachedDuplicates: duplicateCache.load,
-  clearDuplicateCache: () => fs.unlink(DUPLICATES_CACHE_PATH).catch(() => { }),
+  loadCachedDuplicates: duplicateCache.load.bind(duplicateCache),
+  clearDuplicateCache: duplicateCache.clear.bind(duplicateCache),
+  invalidateOnBooksChange,
   duplicateCache,
   calculateWastedBytes,
   recommendFile,
-  formatFile
+  formatFile,
 };

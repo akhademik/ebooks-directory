@@ -25,57 +25,59 @@ const state = {
 };
 
 let cachedBooks = [];
+let syncPromise = null;
 let currentScanId = 0;
 let lastSyncPreview = null;
 
 // ─── Helper Contexts ─────────────────────────────────────────────────────────
 const cache = {
   async getBooks(forceRefresh = false) {
-    // If we have books in memory and aren't forcing, return them
     if (cachedBooks.length > 0 && !forceRefresh) {
       return cachedBooks;
     }
 
-    console.log(`[Cache] 🔄 Syncing with Google Sheets (Source of Truth)...`);
-    try {
-      // 1. Always fetch the master list from Sheets
-      const sheetBooks = await fetchAllBooks(SHEET_ID);
-      
-      // 2. Load local cache to preserve filesystem-only metadata (hashes, sizes, etc.)
-      const localBooks = await cacheManager.load();
-      const localBooksMap = new Map(localBooks.map((book) => [book.location, book]));
-      
-      // 3. Merge: Every book in Sheets is kept, enriched with local metadata if available
-      cachedBooks = sheetBooks.map((sheetBook) => {
-        const localBook = localBooksMap.get(sheetBook.location);
-        if (localBook) {
-          return {
-            ...sheetBook,
-            // Keep filesystem info from local cache
-            size: localBook.size || sheetBook.size,
-            extension: localBook.extension || sheetBook.extension,
-            fileHash: localBook.fileHash || sheetBook.fileHash,
-          };
-        }
-        return sheetBook;
-      });
-
-      // 4. Update the local JSON to match the new reality
-      await cacheManager.save(cachedBooks);
-      console.log(`[Cache] ✅ Successfully synced ${cachedBooks.length} books from Sheets.`);
-    } catch (error) {
-      console.error(`[Cache] ❌ Failed to fetch from Google Sheets: ${error.message}`);
-      
-      // Fallback: If Sheets fails, try to load whatever we have locally
-      if (cachedBooks.length === 0) {
-        cachedBooks = await cacheManager.load();
-        if (cachedBooks.length > 0) {
-          console.log(`[Cache] 📂 Fallback: Loaded ${cachedBooks.length} books from local JSON.`);
-        }
-      }
+    // Nếu đang có sync chạy rồi, đợi nó xong thay vì chạy thêm 1 cái nữa
+    if (syncPromise) {
+      return syncPromise;
     }
 
-    return cachedBooks;
+    syncPromise = (async () => {
+      console.log(`[Cache] 🔄 Syncing with Google Sheets (Source of Truth)...`);
+      try {
+        const sheetBooks = await fetchAllBooks(SHEET_ID);
+        const localBooks = await cacheManager.load();
+        const localBooksMap = new Map(localBooks.map((book) => [book.location, book]));
+
+        cachedBooks = sheetBooks.map((sheetBook) => {
+          const localBook = localBooksMap.get(sheetBook.location);
+          if (localBook) {
+            return {
+              ...sheetBook,
+              size: localBook.size || sheetBook.size,
+              extension: localBook.extension || sheetBook.extension,
+              fileHash: localBook.fileHash || sheetBook.fileHash,
+            };
+          }
+          return sheetBook;
+        });
+
+        await cacheManager.save(cachedBooks);
+        console.log(`[Cache] ✅ Successfully synced ${cachedBooks.length} books from Sheets.`);
+      } catch (error) {
+        console.error(`[Cache] ❌ Failed to fetch from Google Sheets: ${error.message}`);
+        if (cachedBooks.length === 0) {
+          cachedBooks = await cacheManager.load();
+          if (cachedBooks.length > 0) {
+            console.log(`[Cache] 📂 Fallback: Loaded ${cachedBooks.length} books from local JSON.`);
+          }
+        }
+      } finally {
+        syncPromise = null;  // ← reset để lần sau forceRefresh vẫn chạy được
+      }
+      return cachedBooks;
+    })();
+
+    return syncPromise;
   },
   updateBook(updatedBook) {
     const index = cachedBooks.findIndex((book) => book.location === updatedBook.location);
