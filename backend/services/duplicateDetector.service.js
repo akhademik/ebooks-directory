@@ -134,9 +134,9 @@ const duplicateCache = {
         return null;
       }
 
-      // Trả về results sạch, bỏ internal field _savedAt
-      const { _savedAt, ...results } = parsed;
-      return results;
+      // Trả về results sạch, delete _savedAt thay vì destructure để tránh no-unused-vars
+      delete parsed._savedAt;
+      return parsed;
     } catch {
       return null;
     }

@@ -16,9 +16,8 @@ function init({ sheetId, onFlushSuccess, onAfterDelete }) {
   config.sheetId = sheetId;
   config.onFlushSuccess = onFlushSuccess;
   config.onAfterDelete = onAfterDelete;
-  
+
   if (!flushInterval) {
-    // Flush every 10 seconds as per Task 1.1
     flushInterval = setInterval(() => {
       flush().catch(err => console.error("[WriteQueue] Interval flush error:", err.message));
     }, 10000);
@@ -58,18 +57,17 @@ async function flush() {
   }
 
   isFlushing = true;
-  
+
   try {
     // 1. Handle updates
     if (queue.length > 0) {
       const itemsToFlush = [...queue];
       console.log(`[WriteQueue] ⏳ Flushing ${itemsToFlush.length} updates to Google Sheets...`);
       await batchUpdateBooks(config.sheetId, itemsToFlush);
-      
-      // Remove only items that were successfully flushed
+
       queue = queue.filter(item => !itemsToFlush.some(flushed => flushed.location === item.location));
       console.log(`[WriteQueue] ✅ Successfully flushed ${itemsToFlush.length} updates.`);
-      
+
       if (config.onFlushSuccess) {
         await config.onFlushSuccess();
       }
@@ -83,7 +81,7 @@ async function flush() {
       await batchDeleteBooks(config.sheetId, indicesToDelete);
       deleteQueue = [];
       console.log(`[WriteQueue] ✅ Successfully deleted ${indicesToDelete.length} rows.`);
-      
+
       if (config.onAfterDelete) {
         await config.onAfterDelete(indicesToDelete);
       }
@@ -92,6 +90,31 @@ async function flush() {
     console.error(`[WriteQueue] ❌ Flush failed: ${error.message}. Keeping items in queue for retry.`);
   } finally {
     isFlushing = false;
+  }
+}
+
+/**
+ * Pauses the auto-flush interval.
+ * Call this before a sync operation to prevent concurrent Sheets API calls.
+ */
+function pauseInterval() {
+  if (flushInterval) {
+    clearInterval(flushInterval);
+    flushInterval = null;
+    console.log("[WriteQueue] ⏸ Auto-flush interval paused.");
+  }
+}
+
+/**
+ * Resumes the auto-flush interval.
+ * Call this after a sync operation completes.
+ */
+function resumeInterval() {
+  if (!flushInterval) {
+    flushInterval = setInterval(() => {
+      flush().catch(err => console.error("[WriteQueue] Interval flush error:", err.message));
+    }, 10000);
+    console.log("[WriteQueue] ▶ Auto-flush interval resumed.");
   }
 }
 
@@ -112,4 +135,6 @@ module.exports = {
   enqueueDelete,
   flush,
   shutdown,
+  pauseInterval,
+  resumeInterval,
 };
