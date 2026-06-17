@@ -5,7 +5,7 @@ node_modules/
 !.env.sample
 !.env.example
 !.env.docker.sample
-gen-lang-client-*.json
 return.html
 
 backend/storage/books.cache.json
+backend/storage/duplicates.cache.json

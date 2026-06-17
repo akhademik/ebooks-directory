@@ -24,17 +24,41 @@ function stripSuffixes(name) {
   FILENAME_SUFFIXES.forEach((pattern) => {
     cleaned = cleaned.replace(pattern, "");
   });
-  
+
   // Strip leading numbers like "01. ", "1 - ", "123 "
   cleaned = cleaned.replace(/^\d+[\s.-]+/, "");
-  
-  // Replace underscores or multiple dots with spaces
-  return cleaned.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Replace dots with spaces (keep underscores for " _ " delimiter)
+  return cleaned.replace(/[.]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 /**
- * Extracts title and author from a cleaned filename string.
- * Pattern: "Title - Author" or "Title - Author _ Translator"
+ * Cleans noise from an author/translator string:
+ * - Strips fully closed translator annotations: (dịch), (trans.), (translator)
+ * - Strips unclosed parentheses at end of string: (dịch, (dị, (dị, (d
+ * - Normalizes " & " to ", " so multiple authors use consistent delimiter
+ * @param {string} name Raw author or translator string.
+ * @returns {string} Cleaned string.
+ */
+function cleanAuthorNoise(name) {
+  return name
+    // Strip closed translator annotations
+    .replace(/\s{0,5}\((dịch|trans\.?|translator)\)\s{0,5}/gi, "")
+    // Strip any unclosed "(" at end of string (truncated annotations)
+    .replace(/\s{0,5}\([^)]{0,30}$/, "")
+    // Normalize " & " to ", "
+    .replace(/\s{0,5}&\s{0,5}/g, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Extracts title and author (with translator folded in) from a cleaned filename string.
+ * Patterns supported:
+ *   "Title - Author"
+ *   "Title - Author _ Translator"
+ *   "Title - Author1 & Author2"
+ * Result author field uses ", " as delimiter: "Author1, Author2" or "Author, Translator"
  * @param {string} name Cleaned filename string.
  * @returns {Object} { title, author }
  */
@@ -45,13 +69,19 @@ function extractTitleAndAuthor(name) {
   if (name.includes(" - ")) {
     const [titlePart, ...rest] = name.split(" - ");
     title = titlePart.trim();
-    
-    // Author part might contain translator info: "Author _ Translator"
+
     let authorPart = rest.join(" - ").trim();
     if (authorPart.includes(" _ ")) {
-      [authorPart] = authorPart.split(" _ ");
+      const [mainAuthor, ...translatorParts] = authorPart.split(" _ ");
+      const cleanedMain = cleanAuthorNoise(mainAuthor);
+      const cleanedTranslator = cleanAuthorNoise(translatorParts.join(" _ "));
+
+      author = cleanedTranslator
+        ? `${cleanedMain}, ${cleanedTranslator}`
+        : cleanedMain;
+    } else {
+      author = cleanAuthorNoise(authorPart);
     }
-    author = authorPart.trim();
   }
 
   return { title, author };
@@ -63,7 +93,7 @@ function extractTitleAndAuthor(name) {
 function parseFilename(filename) {
   const extension = path.extname(filename);
   const baseName = path.basename(filename, extension);
-  
+
   const cleanedName = stripSuffixes(baseName);
   const { title, author } = extractTitleAndAuthor(cleanedName);
 
@@ -109,8 +139,11 @@ async function enrichBookMetadata({ filename, location, goodreadsId, currentMeta
     goodreadsId: goodreadsId || baseInfo.goodreadsId,
   };
 
-  const authorArg = baseInfo.author !== "Unknown" ? baseInfo.author : "";
-  const result = await fetchMetadata(baseInfo.title, authorArg, metadata.goodreadsId);
+  // author field may be "Author, Translator" — only pass main author to search
+  const mainAuthor = baseInfo.author !== UNKNOWN_AUTHOR
+    ? baseInfo.author.split(",")[0].trim()
+    : "";
+  const result = await fetchMetadata(baseInfo.title, mainAuthor, metadata.goodreadsId);
 
   if (result && !result.notFound) {
     return {

@@ -63,19 +63,36 @@ function calculateTitleSimilarity(queryTitle, candidateTitle) {
 function isAuthorMatch(expectedAuthor, candidateAuthor) {
   if (!expectedAuthor || !candidateAuthor) return true;
 
-  const expectedWords = cleanSearchQuery(expectedAuthor).split(/\s+/).filter(Boolean);
-  if (!expectedWords.length) return true;
-
+  // Tách candidateAuthor theo dấu phẩy, bỏ phần chú thích như "(translator)"
   const candidateNames = candidateAuthor
     .split(",")
     .map((name) => name.replace(/\([^)]{0,500}\)/g, "").trim())
     .filter(Boolean);
 
+  if (!candidateNames.length) return true;
+
+  // Gộp tất cả words của các candidate names vào 1 set
+  const allCandidateWords = new Set(
+    candidateNames.flatMap((name) => cleanSearchQuery(name).split(/\s+/).filter(Boolean))
+  );
+
+  // expectedAuthor có thể là "Herbert Wild Tạ Phương" (nhiều người ghép lại không có dấu phẩy)
+  // → tính tỉ lệ bao nhiêu words của expected xuất hiện trong tập candidate words
+  const expectedWords = cleanSearchQuery(expectedAuthor).split(/\s+/).filter(Boolean);
+  if (!expectedWords.length) return true;
+
+  const matchedCount = expectedWords.filter((word) => allCandidateWords.has(word)).length;
+
+  // Nếu ít nhất AUTHOR_MATCH_THRESHOLD words của expected khớp → coi là match
+  if (matchedCount / expectedWords.length > AUTHOR_MATCH_THRESHOLD) return true;
+
+  // Fallback: thử match từng candidate name riêng lẻ với toàn bộ expectedAuthor
+  // (giữ nguyên logic cũ để không break các case khác)
   return candidateNames.some((name) => {
     const nameWords = new Set(cleanSearchQuery(name).split(/\s+/).filter(Boolean));
     if (!nameWords.size) return false;
-    const matchedCount = expectedWords.filter((word) => nameWords.has(word)).length;
-    return matchedCount / expectedWords.length > AUTHOR_MATCH_THRESHOLD;
+    const matched = expectedWords.filter((word) => nameWords.has(word)).length;
+    return matched / expectedWords.length > AUTHOR_MATCH_THRESHOLD;
   });
 }
 
@@ -87,11 +104,15 @@ async function evaluateSearchResults(page, { expectedTitle, expectedAuthor, thre
     const links = Array.from(document.querySelectorAll('a.bookTitle, a[href*="/book/show/"]'));
     return links.slice(0, 5).map((link) => {
       const row = link.closest('tr, .bookRow, [itemtype*="Book"]') || link.parentElement;
-      const authorEl = row?.querySelector('.authorName, [data-testid="author"], .by a');
+      // Lấy tất cả authorName (gồm cả dịch giả), join bằng dấu phẩy
+      const authorEls = row?.querySelectorAll('.authorName, [data-testid="author"]');
+      const author = authorEls && authorEls.length > 0
+        ? Array.from(authorEls).map((el) => el.innerText?.trim()).filter(Boolean).join(", ")
+        : row?.querySelector('.by a')?.innerText?.trim() || "";
       return {
         href: link.href,
         title: link.innerText?.trim() || link.title || "",
-        author: authorEl?.innerText?.trim() || "",
+        author,
       };
     });
   });
