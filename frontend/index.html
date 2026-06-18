@@ -120,6 +120,10 @@
             Title / Author
             <i class="fas fa-sort sort-icon"></i>
           </div>
+          <div class="th" id="th-tags" data-sort="tags">
+            Tags
+            <i class="fas fa-sort sort-icon"></i>
+          </div>
           <div class="th" id="th-ext" data-sort="ext">
             Format
             <i class="fas fa-sort sort-icon"></i>
@@ -147,6 +151,12 @@
               class="filter-input"
               placeholder="Search title or author…"
             />
+          </div>
+          <div class="pr-2">
+            <select id="tagFilter" class="filter-input">
+              <option value="">All tags</option>
+              <!-- Dynamically populated -->
+            </select>
           </div>
           <div class="pr-2">
             <select id="typeFilter" class="filter-input">

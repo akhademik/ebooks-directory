@@ -69,7 +69,7 @@ body {
 
 .table-header-row {
   display: grid;
-  grid-template-columns: 44px 1fr 90px 80px 48px 48px;
+  grid-template-columns: 44px 1fr 280px 80px 70px 48px 48px;
   gap: 0;
   padding: 10px 20px;
   background: var(--surface-raised);
@@ -110,7 +110,7 @@ body {
 /* Filter row */
 .filter-row {
   display: grid;
-  grid-template-columns: 44px 1fr 90px 80px 48px 48px;
+  grid-template-columns: 44px 1fr 280px 80px 70px 48px 48px;
   gap: 0;
   padding: 8px 20px;
   background: rgba(11, 15, 26, 0.6);
@@ -181,10 +181,10 @@ select.filter-input {
 /* Book rows */
 .book-row {
   display: grid;
-  grid-template-columns: 44px 1fr 90px 80px 48px 48px;
+  grid-template-columns: 44px 1fr 280px 80px 70px 48px 48px;
   gap: 0;
-  padding: 8px 20px;
-  align-items: center;
+  padding: 12px 20px;
+  align-items: start;
   border-bottom: 1px solid var(--border);
   transition: background 0.12s;
   position: relative;
@@ -203,6 +203,7 @@ select.filter-input {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  align-self: center;
 }
 
 /* Book info cell */
@@ -211,6 +212,7 @@ select.filter-input {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  align-self: start;
 }
 
 .cover-thumb {
@@ -321,6 +323,37 @@ select.filter-input {
   font-weight: 700;
 }
 
+/* Tags cell */
+.tags-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-self: start;
+  gap: 5px;
+  row-gap: 6px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.tag-pill {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  line-height: 1.4;
+  transition: all 0.15s;
+}
+
+.tag-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: var(--accent-dim);
+}
+
 /* Format badge */
 .format-badge {
   display: inline-block;
@@ -329,6 +362,7 @@ select.filter-input {
   letter-spacing: 0.06em;
   padding: 2px 7px;
   border-radius: 999px;
+  align-self: center;
 }
 
 .badge-epub {
@@ -366,12 +400,14 @@ select.filter-input {
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  align-self: center;
 }
 
 /* Action buttons */
 .action-cell {
   display: flex;
   justify-content: center;
+  align-self: center;
 }
 
 .icon-btn {

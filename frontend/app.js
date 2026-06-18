@@ -17,6 +17,7 @@ import {
   toggleDuplicates,
   setShowingDuplicates,
   setDuplicateResults,
+  setActiveTag,
   addDeletedInSession,
   clearDeletedInSession,
   setFetchingBooks,
@@ -69,6 +70,13 @@ document.addEventListener("DOMContentLoaded", () => {
     setShowingDuplicates(false);
     setActiveFormat(EL.typeFilter().value);
     syncChips();
+    syncDuplicatesBtnState();
+    resetAndRender();
+  });
+  EL.tagFilter().addEventListener("change", () => {
+    setShowingDuplicates(false);
+    setActiveTag(EL.tagFilter().value);
+    updateSortHeaders();
     syncDuplicatesBtnState();
     resetAndRender();
   });

@@ -5,6 +5,7 @@ import {
   setPendingDeletePath,
   resetDuplicatesPagination,
   incrementDuplicatesPage,
+  setActiveTag,
 } from "./state.manager.js";
 import { fetchPreviewApi } from "./api.service.js";
 
@@ -19,6 +20,7 @@ export const EL = {
   headerCount: () => document.getElementById("headerCount"),
   searchInput: () => document.getElementById("searchInput"),
   typeFilter: () => document.getElementById("typeFilter"),
+  tagFilter: () => document.getElementById("tagFilter"),
   minSize: () => document.getElementById("minSize"),
   syncBtn: () => document.getElementById("syncBtn"),
   scanBtn: () => document.getElementById("scanBtn"),
@@ -109,12 +111,18 @@ export function syncChips() {
 
 export function updateFilters() {
   const extensions = new Set();
+  const tags = new Set();
+
   state.allBooks.forEach((b) => {
     const ext = (b.location || "").split(".").pop().toLowerCase();
     if (ext) extensions.add(ext);
+    if (Array.isArray(b.tags)) {
+      b.tags.forEach(t => tags.add(t));
+    }
   });
 
   const sortedExts = Array.from(extensions).sort();
+  const sortedTags = Array.from(tags).sort((a, b) => a.localeCompare(b));
 
   const chipsContainer = EL.formatChips();
   const currentFormat = state.activeFormat;
@@ -134,6 +142,18 @@ export function updateFilters() {
     if (ext === currentFormat) opt.selected = true;
     select.appendChild(opt);
   });
+
+  const tagSelect = EL.tagFilter();
+  if (tagSelect) {
+    tagSelect.innerHTML = '<option value="">All tags</option>';
+    sortedTags.forEach((tag) => {
+      const opt = document.createElement("option");
+      opt.value = tag;
+      opt.textContent = tag;
+      if (tag === state.activeTag) opt.selected = true;
+      tagSelect.appendChild(opt);
+    });
+  }
 }
 
 export function updateSortHeaders() {
@@ -150,12 +170,33 @@ export function updateSortHeaders() {
       }
     }
   });
+
+  let sortInfo = "";
   if (state.sortKey) {
-    const labels = { title: "Title", ext: "Format", size: "Size" };
+    const labels = { title: "Title", ext: "Format", size: "Size", tags: "Tags" };
     const dirArrow = state.sortDir === "asc" ? "↑" : "↓";
-    EL.sortLabel().textContent = `Sorted by ${labels[state.sortKey] || state.sortKey} (${dirArrow})`;
-  } else {
-    EL.sortLabel().textContent = "";
+    sortInfo += `Sorted by ${labels[state.sortKey] || state.sortKey} (${dirArrow})`;
+  }
+  
+  if (state.activeTag) {
+    sortInfo += (sortInfo ? " | " : "") + `Filter: Tag "${state.activeTag}" <span class="clear-tag" style="cursor:pointer;color:#f87171;margin-left:4px;font-weight:bold;font-size:14px;" title="Clear tag filter">×</span>`;
+  }
+
+  const labelEl = EL.sortLabel();
+  labelEl.innerHTML = sortInfo;
+
+  const tagSelect = EL.tagFilter();
+  if (tagSelect) {
+    tagSelect.value = state.activeTag || "";
+  }
+
+  const clearBtn = labelEl.querySelector(".clear-tag");
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      setActiveTag("");
+      updateSortHeaders();
+      resetAndRender();
+    };
   }
 }
 
@@ -165,6 +206,7 @@ export function getFilteredBooks() {
   const queryTerms = rawQuery.split(/\s+/).filter(Boolean);
   const type = (EL.typeFilter().value || state.activeFormat).toLowerCase();
   const minMB = parseFloat(EL.minSize().value) || 0;
+  const activeTag = state.activeTag ? removeAccents(state.activeTag) : "";
 
   let books = state.allBooks.filter((book) => {
     const combined =
@@ -176,6 +218,11 @@ export function getFilteredBooks() {
 
     const sizeMB = parseFloat(book.size) || 0;
     if (sizeMB < minMB) return false;
+
+    if (activeTag) {
+      const bookTags = Array.isArray(book.tags) ? book.tags.map(t => removeAccents(t)) : [];
+      if (!bookTags.includes(activeTag)) return false;
+    }
 
     return true;
   });
@@ -192,6 +239,17 @@ export function getFilteredBooks() {
       } else if (state.sortKey === "size") {
         va = parseFloat(a.size) || 0;
         vb = parseFloat(b.size) || 0;
+      } else if (state.sortKey === "tags") {
+        const tagsA = Array.isArray(a.tags) ? a.tags : [];
+        const tagsB = Array.isArray(b.tags) ? b.tags : [];
+        // Sort by first tag, or empty string if no tags
+        va = tagsA.length > 0 ? removeAccents(tagsA[0]) : "";
+        vb = tagsB.length > 0 ? removeAccents(tagsB[0]) : "";
+        // Tie-breaker: number of tags
+        if (va === vb) {
+          va = tagsA.length;
+          vb = tagsB.length;
+        }
       }
       if (va < vb) return state.sortDir === "asc" ? -1 : 1;
       if (va > vb) return state.sortDir === "asc" ? 1 : -1;
@@ -292,6 +350,16 @@ export function syncDuplicatesBtnState() {
   }
 }
 
+export function getTagStyles(tag) {
+  let hash = 0;
+  for (let i = 0; i < tag.length; i++) {
+    hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const h = Math.abs(hash) % 360;
+  // Use HSL for consistent saturation and lightness
+  return `background: hsla(${h}, 70%, 40%, 0.15); color: hsl(${h}, 90%, 80%); border-color: hsla(${h}, 70%, 50%, 0.2);`;
+}
+
 export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
   const { ext, initials, stars, ratingText, coverUrl } = metadata;
   const goodreadsUrl = book.goodreadsId ? `https://www.goodreads.com/book/show/${book.goodreadsId}` : "";
@@ -303,6 +371,14 @@ export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
   const coverHtml = coverUrl 
     ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.onerror=null; this.parentElement.classList.add('no-cover'); this.remove();">` 
     : "";
+
+  const tags = Array.isArray(book.tags) ? book.tags : [];
+  const tagsHtml = tags
+    .map(tag => {
+      const style = getTagStyles(tag);
+      return `<span class="tag-pill" style="${style}" title="${escHtml(tag)}">${escHtml(tag)}</span>`;
+    })
+    .join("");
 
   return `
      <div class="row-idx">${displayIndex}</div>
@@ -320,6 +396,7 @@ export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
              ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
          </div>
      </div>
+     <div class="tags-cell">${tagsHtml}</div>
      <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
      <div class="size-cell">${book.size || "—"} MB</div>
      <div class="action-cell">
@@ -340,6 +417,16 @@ export function attachRowEventListeners(row, book, canPreview) {
   previewTriggers.forEach((el) => {
     el.addEventListener("click", () => {
       if (canPreview) showPreview(book);
+    });
+  });
+
+  const tagPills = row.querySelectorAll(".tag-pill");
+  tagPills.forEach((pill) => {
+    pill.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setActiveTag(pill.textContent.trim());
+      updateSortHeaders();
+      resetAndRender();
     });
   });
 }

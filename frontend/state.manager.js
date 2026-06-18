@@ -8,7 +8,7 @@ export const state = {
   currentPage: 1,
   BOOKS_PER_PAGE: 25,
   
-  sortKey: null, // 'title' | 'ext' | 'size' | 'rating'
+  sortKey: null, // 'title' | 'ext' | 'size' | 'rating' | 'tags'
   sortDir: "asc", // 'asc' | 'desc'
   activeFormat: "", // quick-filter chip
   
@@ -46,6 +46,10 @@ export function setSort(key, dir) {
 
 export function setActiveFormat(format) {
   state.activeFormat = format;
+}
+
+export function setActiveTag(tag) {
+  state.activeTag = tag;
 }
 
 export function toggleDuplicates() {
