@@ -1,5 +1,6 @@
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const { extractGenres } = require("./tagExtractor");
 puppeteer.use(StealthPlugin());
 
 const SIMILARITY_THRESHOLD = 0.6;
@@ -58,12 +59,23 @@ function calculateTitleSimilarity(queryTitle, candidateTitle) {
 }
 
 /**
- * Checks if the expected author matches any of the candidate authors.
+ * Checks if expected authors (string or array) match candidate author string from Goodreads.
+ * expectedAuthors: string[] từ filename parser, VD: ["Carlo Rovelli", "Nguyễn Hải Châu"]
+ * candidateAuthor: string từ Goodreads, VD: "Carlo Rovelli, Tạ Phương"
+ *
+ * Match khi ÍT NHẤT 1 expected author khớp với ít nhất 1 candidate name.
  */
-function isAuthorMatch(expectedAuthor, candidateAuthor) {
-  if (!expectedAuthor || !candidateAuthor) return true;
+function isAuthorMatch(expectedAuthors, candidateAuthor) {
+  if (!expectedAuthors || !candidateAuthor) return true;
 
-  // Tách candidateAuthor theo dấu phẩy, bỏ phần chú thích như "(translator)"
+  // Chuẩn hoá expectedAuthors thành array
+  const expectedList = Array.isArray(expectedAuthors)
+    ? expectedAuthors.filter(Boolean)
+    : [expectedAuthors];
+
+  if (!expectedList.length) return true;
+
+  // Tách candidate thành từng tên, bỏ ghi chú như "(translator)"
   const candidateNames = candidateAuthor
     .split(",")
     .map((name) => name.replace(/\([^)]{0,500}\)/g, "").trim())
@@ -71,35 +83,33 @@ function isAuthorMatch(expectedAuthor, candidateAuthor) {
 
   if (!candidateNames.length) return true;
 
-  // Gộp tất cả words của các candidate names vào 1 set
-  const allCandidateWords = new Set(
-    candidateNames.flatMap((name) => cleanSearchQuery(name).split(/\s+/).filter(Boolean))
-  );
+  // Với mỗi expected author, kiểm tra xem có match với bất kỳ candidate name nào không
+  return expectedList.some((expected) => {
+    const expectedWords = cleanSearchQuery(expected).split(/\s+/).filter(Boolean);
+    if (!expectedWords.length) return false;
+    const expectedSet = new Set(expectedWords);
 
-  // expectedAuthor có thể là "Herbert Wild Tạ Phương" (nhiều người ghép lại không có dấu phẩy)
-  // → tính tỉ lệ bao nhiêu words của expected xuất hiện trong tập candidate words
-  const expectedWords = cleanSearchQuery(expectedAuthor).split(/\s+/).filter(Boolean);
-  if (!expectedWords.length) return true;
+    return candidateNames.some((candidate) => {
+      const candidateWords = cleanSearchQuery(candidate).split(/\s+/).filter(Boolean);
+      if (!candidateWords.length) return false;
+      const candidateSet = new Set(candidateWords);
 
-  const matchedCount = expectedWords.filter((word) => allCandidateWords.has(word)).length;
+      // Chiều 1: candidate words có trong expected? (candidate ⊆ expected)
+      // VD: "Carlo Rovelli" vs expected "Carlo Rovelli" → 2/2 = 1.0 ✓
+      const fwdMatch = candidateWords.filter((w) => expectedSet.has(w)).length / candidateWords.length;
+      if (fwdMatch > AUTHOR_MATCH_THRESHOLD) return true;
 
-  // Nếu ít nhất AUTHOR_MATCH_THRESHOLD words của expected khớp → coi là match
-  if (matchedCount / expectedWords.length > AUTHOR_MATCH_THRESHOLD) return true;
-
-  // Fallback: thử match từng candidate name riêng lẻ với toàn bộ expectedAuthor
-  // (giữ nguyên logic cũ để không break các case khác)
-  return candidateNames.some((name) => {
-    const nameWords = new Set(cleanSearchQuery(name).split(/\s+/).filter(Boolean));
-    if (!nameWords.size) return false;
-    const matched = expectedWords.filter((word) => nameWords.has(word)).length;
-    return matched / expectedWords.length > AUTHOR_MATCH_THRESHOLD;
+      // Chiều 2: expected words có trong candidate? (expected ⊆ candidate)
+      const bwdMatch = expectedWords.filter((w) => candidateSet.has(w)).length / expectedWords.length;
+      return bwdMatch > AUTHOR_MATCH_THRESHOLD;
+    });
   });
 }
 
 /**
  * Evaluates search results on the page to find a matching book.
  */
-async function evaluateSearchResults(page, { expectedTitle, expectedAuthor, threshold }) {
+async function evaluateSearchResults(page, { expectedTitle, expectedAuthors, threshold }) {
   const candidates = await page.evaluate(() => {
     const links = Array.from(document.querySelectorAll('a.bookTitle, a[href*="/book/show/"]'));
     return links.slice(0, 5).map((link) => {
@@ -119,7 +129,7 @@ async function evaluateSearchResults(page, { expectedTitle, expectedAuthor, thre
 
   for (const candidate of candidates) {
     const titleScore = calculateTitleSimilarity(expectedTitle, candidate.title);
-    const authorMatches = isAuthorMatch(expectedAuthor, candidate.author);
+    const authorMatches = isAuthorMatch(expectedAuthors, candidate.author);
 
     if (titleScore >= threshold && authorMatches) {
       return candidate.href;
@@ -152,7 +162,7 @@ async function findBookUrl(page, searchUrl, options) {
  * Extracts metadata from a book page.
  */
 async function extractBookMetadata(page) {
-  return await page.evaluate(() => {
+  const basicMetadata = await page.evaluate(() => {
     const getElementText = (selector) => document.querySelector(selector)?.innerText?.trim() || "";
 
     const title = getElementText('h1[data-testid="bookTitle"]') || getElementText("#bookTitle");
@@ -182,16 +192,28 @@ async function extractBookMetadata(page) {
       goodreadsId: window.location.href.match(/\/show\/(\d+)/)?.[1] ?? "",
     };
   });
+
+  // Genres cần page.click() (nút "...more") nên xử lý riêng, không nhúng vào page.evaluate()
+  let genres = [];
+  try {
+    genres = await extractGenres(page);
+  } catch (error) {
+    console.error(`[GoodreadsClient] Genre extraction error: ${error.message}`);
+  }
+
+  return { ...basicMetadata, genres };
 }
 
 /**
  * Attempts to find a book URL using different search strategies.
  */
-async function searchForBookUrl(page, { title, author }) {
-  const options = { expectedTitle: title, expectedAuthor: author, threshold: SIMILARITY_THRESHOLD };
+async function searchForBookUrl(page, { title, authors }) {
+  // Dùng tác giả đầu tiên (tác giả gốc) để search, bỏ dịch giả
+  const primaryAuthor = Array.isArray(authors) ? (authors[0] || "") : (authors || "");
+  const options = { expectedTitle: title, expectedAuthors: authors, threshold: SIMILARITY_THRESHOLD };
 
-  // Strategy 1: Title + Author
-  const fullQuery = encodeURIComponent(`${cleanSearchQuery(title)} ${cleanSearchQuery(author)}`);
+  // Strategy 1: Title + Primary Author
+  const fullQuery = encodeURIComponent(`${cleanSearchQuery(title)} ${cleanSearchQuery(primaryAuthor)}`);
   let url = await findBookUrl(page, `https://www.goodreads.com/search?q=${fullQuery}`, options);
   if (url) return url;
 
@@ -202,13 +224,23 @@ async function searchForBookUrl(page, { title, author }) {
 
 /**
  * Main function to fetch book metadata from Goodreads.
+ * @param {string} title
+ * @param {string | string[]} authors - Có thể là string (legacy) hoặc string[] (mới)
+ * @param {string} goodreadsId
  */
 const PUPPETEER_USER_DATA_DIR = process.env.PUPPETEER_USER_DATA_DIR;
 
-// Queue để đảm bảo chỉ 1 Puppeteer instance chạy tại 1 thời điểm
 let queue = Promise.resolve();
 
-async function _fetchMetadata(title, author = "", goodreadsId = "") {
+async function _fetchMetadata(title, authors = [], goodreadsId = "") {
+  // Tương thích ngược: nếu truyền vào string thì wrap thành array
+  let authorsArray = [];
+  if (Array.isArray(authors)) {
+    authorsArray = authors.filter(Boolean);
+  } else if (authors) {
+    authorsArray = [authors];
+  }
+
   let browser = null;
 
   try {
@@ -225,10 +257,10 @@ async function _fetchMetadata(title, author = "", goodreadsId = "") {
 
     let bookUrl = goodreadsId
       ? `https://www.goodreads.com/book/show/${goodreadsId}`
-      : await searchForBookUrl(page, { title, author });
+      : await searchForBookUrl(page, { title, authors: authorsArray });
 
     if (!bookUrl) {
-      return { notFound: true, searchedTitle: title, searchedAuthor: author };
+      return { notFound: true, searchedTitle: title, searchedAuthors: authorsArray };
     }
 
     if (page.url() !== bookUrl) {
@@ -249,8 +281,8 @@ async function _fetchMetadata(title, author = "", goodreadsId = "") {
   }
 }
 
-function fetchMetadata(title, author = "", goodreadsId = "") {
-  queue = queue.then(() => _fetchMetadata(title, author, goodreadsId));
+function fetchMetadata(title, authors = [], goodreadsId = "") {
+  queue = queue.then(() => _fetchMetadata(title, authors, goodreadsId));
   return queue;
 }
 

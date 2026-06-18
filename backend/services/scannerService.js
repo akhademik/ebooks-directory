@@ -6,18 +6,18 @@ const BYTES_PER_MB = 1024 * 1024;
 const UNKNOWN_AUTHOR = "Unknown";
 
 const FILENAME_SUFFIXES = [
-  /_\d+$/,           // _10922
-  /\(\d+\)$/,        // (1)
-  /_copy$/i,         // _copy
-  /\(scan\)$/i,      // (scan)
+  /_\d+$/,             // _10922
+  /\(\d+\)$/,          // (1)
+  /_copy$/i,           // _copy
+  /\(scan\)$/i,        // (scan)
   /\[[^\]]{0,100}\]/g, // [EPUB]
   /\([^)]{0,100}\)/g,  // (2023)
 ];
 
 /**
  * Strips common suffixes and "garbage" from a filename.
- * @param {string} name Base filename without extension.
- * @returns {string} Cleaned name.
+ * Giữ nguyên " _ " (space-underscore-space) để dùng làm delimiter tác giả/dịch giả.
+ * Chỉ replace dot và underscore đơn lẻ (không có space hai bên) thành space.
  */
 function stripSuffixes(name) {
   let cleaned = name;
@@ -28,76 +28,51 @@ function stripSuffixes(name) {
   // Strip leading numbers like "01. ", "1 - ", "123 "
   cleaned = cleaned.replace(/^\d+[\s.-]+/, "");
 
-  // Replace dots with spaces (keep underscores for " _ " delimiter)
-  return cleaned.replace(/[.]/g, " ").replace(/\s+/g, " ").trim();
+  // Replace dots with spaces
+  cleaned = cleaned.replace(/\./g, " ");
+
+  // Replace underscore KHÔNG có space hai bên → space (giữ " _ " nguyên)
+  cleaned = cleaned.replace(/(?<! )_(?! )/g, " ");
+
+  return cleaned.replace(/\s+/g, " ").trim();
 }
 
 /**
- * Cleans noise from an author/translator string:
- * - Strips fully closed translator annotations: (dịch), (trans.), (translator)
- * - Strips unclosed parentheses at end of string: (dịch, (dị, (dị, (d
- * - Normalizes " & " to ", " so multiple authors use consistent delimiter
- * @param {string} name Raw author or translator string.
- * @returns {string} Cleaned string.
- */
-function cleanAuthorNoise(name) {
-  return name
-    // Strip closed translator annotations
-    .replace(/\s{0,5}\((dịch|trans\.?|translator)\)\s{0,5}/gi, "")
-    // Strip any unclosed "(" at end of string (truncated annotations)
-    .replace(/\s{0,5}\([^)]{0,30}$/, "")
-    // Normalize " & " to ", "
-    .replace(/\s{0,5}&\s{0,5}/g, ", ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Extracts title and author (with translator folded in) from a cleaned filename string.
- * Patterns supported:
- *   "Title - Author"
- *   "Title - Author _ Translator"
- *   "Title - Author1 & Author2"
- * Result author field uses ", " as delimiter: "Author1, Author2" or "Author, Translator"
- * @param {string} name Cleaned filename string.
- * @returns {Object} { title, author }
+ * Extracts title and authors from a cleaned filename string.
+ * Pattern: "Title - Author" hoặc "Title - Author _ Translator (dịch)"
+ * Trả về authors array để goodreadsClient match chính xác từng người.
  */
 function extractTitleAndAuthor(name) {
   let title = name;
-  let author = UNKNOWN_AUTHOR;
+  let authors = [];
 
   if (name.includes(" - ")) {
     const [titlePart, ...rest] = name.split(" - ");
     title = titlePart.trim();
 
-    let authorPart = rest.join(" - ").trim();
-    if (authorPart.includes(" _ ")) {
-      const [mainAuthor, ...translatorParts] = authorPart.split(" _ ");
-      const cleanedMain = cleanAuthorNoise(mainAuthor);
-      const cleanedTranslator = cleanAuthorNoise(translatorParts.join(" _ "));
-
-      author = cleanedTranslator
-        ? `${cleanedMain}, ${cleanedTranslator}`
-        : cleanedMain;
-    } else {
-      author = cleanAuthorNoise(authorPart);
-    }
+    // "Carlo Rovelli _ Nguyễn Hải Châu (dịch)" → ["Carlo Rovelli", "Nguyễn Hải Châu"]
+    const authorPart = rest.join(" - ").trim();
+    authors = authorPart
+      .split(" _ ")
+      .map((p) => p.replace(/\([^)]{0,200}\)/g, "").trim())
+      .filter(Boolean);
   }
 
-  return { title, author };
+  const author = authors.length > 0 ? authors[0] : UNKNOWN_AUTHOR;
+  return { title, author, authors };
 }
 
 /**
- * Parses a filename to extract title and author.
+ * Parses a filename to extract title and authors.
  */
 function parseFilename(filename) {
   const extension = path.extname(filename);
   const baseName = path.basename(filename, extension);
 
   const cleanedName = stripSuffixes(baseName);
-  const { title, author } = extractTitleAndAuthor(cleanedName);
+  const { title, author, authors } = extractTitleAndAuthor(cleanedName);
 
-  return { title, author, extension };
+  return { title, author, authors, extension };
 }
 
 /**
@@ -111,9 +86,11 @@ function getBasicBookInfo(filename, relativePath, absolutePath) {
   return {
     title: parsed.title,
     author: parsed.author,
+    authors: parsed.authors,
     year: "N/A",
     rating: "N/A",
     ratingCount: "",
+    tags: [],
     size: sizeInMB,
     cover: null,
     source: "Filename Parser",
@@ -139,17 +116,22 @@ async function enrichBookMetadata({ filename, location, goodreadsId, currentMeta
     goodreadsId: goodreadsId || baseInfo.goodreadsId,
   };
 
-  // author field may be "Author, Translator" — only pass main author to search
-  const mainAuthor = baseInfo.author !== UNKNOWN_AUTHOR
-    ? baseInfo.author.split(",")[0].trim()
-    : "";
-  const result = await fetchMetadata(baseInfo.title, mainAuthor, metadata.goodreadsId);
+  // Truyền authors array thay vì string để goodreadsClient match chính xác
+  let authorsArg = [];
+  if (baseInfo.authors && baseInfo.authors.length > 0) {
+    authorsArg = baseInfo.authors;
+  } else if (baseInfo.author !== UNKNOWN_AUTHOR) {
+    authorsArg = [baseInfo.author];
+  }
+
+  const result = await fetchMetadata(baseInfo.title, authorsArg, metadata.goodreadsId);
 
   if (result && !result.notFound) {
     return {
       ...metadata,
       title: result.title,
       author: result.author || baseInfo.author,
+      tags: result.genres || [],
       year: result.year || "N/A",
       rating: result.rating || "N/A",
       ratingCount: result.ratingCount || "",

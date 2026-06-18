@@ -26,6 +26,7 @@ const DEFAULT_COLUMN_MAPPING = {
   size: 9,
   location: 10,
   fileHash: 11,
+  tags: 12,
 };
 
 const HEADER_NAME_TO_KEY_MAP = {
@@ -41,6 +42,7 @@ const HEADER_NAME_TO_KEY_MAP = {
   "File Size": "size",
   Location: "location",
   "File Hash": "fileHash",
+  Tags: "tags",
 };
 
 /**
@@ -113,12 +115,14 @@ async function setupSpreadsheetHeaders(spreadsheetId) {
   try {
     const response = await SHEETS_SERVICE.spreadsheets.values.get({
       spreadsheetId,
-      range: "Sheet1!A1:L1",
+      range: "Sheet1!A1:M1",
       auth,
     });
 
     const existingHeaders = response.data.values?.[0] || [];
-    if (existingHeaders.length === 0) {
+    const hasAllHeaders = requiredHeaders.every(h => existingHeaders.includes(h));
+
+    if (!hasAllHeaders) {
       await SHEETS_SERVICE.spreadsheets.values.update({
         spreadsheetId,
         range: "Sheet1!A1",
@@ -126,7 +130,7 @@ async function setupSpreadsheetHeaders(spreadsheetId) {
         resource: { values: [requiredHeaders] },
         auth,
       });
-      console.log("[GoogleSheetsClient] Headers initialized.");
+      console.log("[GoogleSheetsClient] Headers updated/initialized.");
     }
   } catch (error) {
     throw new Error(`Failed to setup headers: ${error.message}`, { cause: error });
@@ -150,6 +154,7 @@ function mapRowToBook(row, index, mapping) {
     year: getCellValue(mapping.year),
     rating: getCellValue(mapping.rating),
     ratingCount: getCellValue(mapping.ratingCount),
+    tags: getCellValue(mapping.tags) ? getCellValue(mapping.tags).split(", ").map(t => t.trim()) : [],
     cover: getCellValue(mapping.cover),
     source: getCellValue(mapping.source),
     size: getCellValue(mapping.size),
@@ -192,6 +197,8 @@ function mapBookToRow(bookData, mapping) {
   Object.entries(mapping).forEach(([key, index]) => {
     if (key === "goodreadsCheck") {
       row[index] = bookData[key] || "No";
+    } else if (key === "tags" && Array.isArray(bookData[key])) {
+      row[index] = bookData[key].join(", ");
     } else {
       row[index] = bookData[key] || "";
     }
