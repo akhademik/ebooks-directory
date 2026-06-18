@@ -1,318 +1,273 @@
 <!doctype html>
 <html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ebook Manager</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
-    />
-    <link rel="stylesheet" href="style.css" />
-  </head>
 
-  <body>
-    <!-- Scan Status Bar -->
-    <div id="statusArea" class="sticky top-0 z-50 px-6 py-2.5 shadow-lg">
-      <div
-        class="max-w-[1400px] mx-auto flex items-center justify-between gap-6 text-xs font-bold tracking-wider uppercase"
-      >
-        <div class="flex items-center gap-3">
-          <i
-            class="fas fa-circle-notch fa-spin text-indigo-400"
-            style="font-size: 13px"
-          ></i>
-          <span id="statusText" class="text-slate-300">Scanning library…</span>
-        </div>
-        <div
-          class="flex-1 max-w-sm bg-slate-900 rounded-full h-1 overflow-hidden border border-white/5"
-        >
-          <div
-            id="progressBar"
-            class="bg-indigo-500 h-full"
-            style="width: 0%"
-          ></div>
-        </div>
-        <span
-          id="scanProgress"
-          class="text-slate-400 tabular-nums min-w-[55px] text-right"
-          >0 / 0</span
-        >
-      </div>
-    </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ebook Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="style.css" />
 
-    <!-- Main Layout -->
-    <main class="max-w-[1400px] mx-auto px-4 py-8 md:px-8">
-      <!-- Header -->
-      <header
-        class="flex flex-col md:flex-row md:items-center justify-between gap-5 mb-8"
-      >
-        <div>
-          <h1
-            class="text-2xl font-black text-white tracking-tight flex items-center gap-3"
-          >
-            <i
-              class="fas fa-book-open text-indigo-500"
-              style="font-size: 22px"
-            ></i>
-            Ebook Manager
-          </h1>
-          <p class="text-slate-500 text-xs font-medium mt-1">
-            Your personal digital library
-          </p>
-        </div>
+</head>
 
-        <div class="flex items-center gap-3 flex-wrap">
-          <!-- Format chips (clickable quick filters) -->
-          <div id="formatChips" class="flex items-center gap-2">
-            <!-- Dynamically populated -->
-          </div>
-
-          <div class="w-px h-5 bg-slate-700"></div>
-
-          <!-- Book count -->
-          <span
-            id="headerCount"
-            class="text-xs text-slate-500 font-semibold tabular-nums"
-            >0 books</span
-          >
-
-          <div class="w-px h-5 bg-slate-700"></div>
-
-          <button
-            id="duplicatesBtn"
-            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-500/30 text-orange-400 hover:text-white hover:border-orange-500 hover:bg-orange-500/10 text-xs font-bold uppercase tracking-widest transition-all relative"
-            title="Show potential duplicate files"
-          >
-            <i class="fas fa-copy"></i>
-            Duplicates
-            <span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>
-          </button>
-
-          <div class="w-px h-5 bg-slate-700"></div>
-
-          <button
-            id="syncBtn"
-            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-indigo-500/30 text-indigo-400 hover:text-white hover:border-indigo-500 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
-            title="Sync file system with Google Sheets"
-          >
-            <i class="fas fa-sync-alt"></i>
-            Sync Library
-          </button>
-
-          <button
-            id="scanBtn"
-            class="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
-            title="Force a full scan and bypass cache"
-          >
-            Force Scan
-          </button>
-        </div>
-      </header>
-
-      <!-- Table -->
-      <div class="table-container">
-        <!-- Sortable column headers -->
-        <div class="table-header-row">
-          <div class="th" style="cursor: default">#</div>
-          <div class="th" id="th-title" data-sort="title">
-            Title / Author
-            <i class="fas fa-sort sort-icon"></i>
-          </div>
-          <div class="th" id="th-tags" data-sort="tags">
-            Tags
-            <i class="fas fa-sort sort-icon"></i>
-          </div>
-          <div class="th" id="th-ext" data-sort="ext">
-            Format
-            <i class="fas fa-sort sort-icon"></i>
-          </div>
-          <div class="th" id="th-size" data-sort="size">
-            Size
-            <i class="fas fa-sort sort-icon"></i>
-          </div>
-          <div class="th" style="justify-content: center; cursor: default">
-            View
-          </div>
-          <div class="th" style="justify-content: center; cursor: default">
-            Get
-          </div>
-        </div>
-
-        <!-- Filters -->
-        <div class="filter-row">
-          <div></div>
-          <div class="search-wrap pr-2">
-            <i class="fas fa-search"></i>
-            <input
-              type="text"
-              id="searchInput"
-              class="filter-input"
-              placeholder="Search title or author…"
-            />
-          </div>
-          <div class="pr-2">
-            <select id="tagFilter" class="filter-input">
-              <option value="">All tags</option>
-              <!-- Dynamically populated -->
-            </select>
-          </div>
-          <div class="pr-2">
-            <select id="typeFilter" class="filter-input">
-              <option value="">All formats</option>
-              <!-- Dynamically populated -->
-            </select>
-          </div>
-          <div class="pr-2">
-            <input
-              type="number"
-              id="minSize"
-              class="filter-input"
-              placeholder="Min MB…"
-              min="0"
-              step="1"
-            />
-          </div>
-          <div></div>
-          <div></div>
-        </div>
-
-        <!-- Result count row -->
-        <div class="result-count">
-          <span id="resultCount">0 books</span>
-          <span id="sortLabel" class="text-slate-600"></span>
-        </div>
-
-        <!-- Book rows -->
-        <div id="bookGrid"></div>
-
-        <!-- Empty state (inside table) -->
-        <div
-          id="emptyState"
-          class="flex-col items-center justify-center py-24 text-slate-600"
-        >
-          <div
-            class="w-16 h-16 bg-slate-900 rounded-full flex items-center justify-center mb-5 border border-slate-800"
-          >
-            <i class="fas fa-book-open text-3xl opacity-20"></i>
-          </div>
-          <p class="text-base font-black text-slate-500 tracking-tight">
-            No books found
-          </p>
-          <p class="text-xs font-medium mt-1">
-            Try a different search or scan your library
-          </p>
-        </div>
-      </div>
-    </main>
-
-    <!-- Preview Modal -->
+<body>
+  <!-- Scan Status Bar -->
+  <div id="statusArea" class="sticky top-0 z-50 px-6 py-2.5 shadow-lg">
     <div
-      id="previewModal"
-      class="fixed inset-0 z-[100] items-center justify-center p-4"
-    >
-      <div
-        class="absolute inset-0 bg-black/90 backdrop-blur-sm"
-        id="modalOverlay"
-      ></div>
-      <div class="modal-inner">
-        <div class="modal-header">
-          <div class="modal-title">
-            <div class="modal-icon"><i class="fas fa-eye"></i></div>
-            <span id="previewTitle">Preview</span>
-          </div>
-          <button id="closeModal" class="close-btn" aria-label="Close preview">
-            <i class="fas fa-times"></i>
+      class="max-w-[1400px] mx-auto flex items-center justify-between gap-6 text-xs font-bold tracking-wider uppercase">
+      <div class="flex items-center gap-3">
+        <i class="fas fa-circle-notch fa-spin text-indigo-400" style="font-size: 13px"></i>
+        <span id="statusText" class="text-slate-300">Scanning library…</span>
+      </div>
+      <div class="flex-1 max-w-sm bg-slate-900 rounded-full h-1 overflow-hidden border border-white/5">
+        <div id="progressBar" class="bg-indigo-500 h-full" style="width: 0%"></div>
+      </div>
+      <span id="scanProgress" class="text-slate-400 tabular-nums min-w-[55px] text-right">0 / 0</span>
+    </div>
+  </div>
+
+  <!-- Main Layout -->
+  <main class="max-w-[1400px] mx-auto px-4 py-8 md:px-8">
+    <!-- Header -->
+    <header class="flex flex-col md:flex-row md:items-center justify-between gap-5 mb-8">
+      <div>
+        <h1 class="text-2xl font-black text-white tracking-tight flex items-center gap-3">
+          <i class="fas fa-book-open text-indigo-500" style="font-size: 22px"></i>
+          Ebook Manager
+        </h1>
+        <p class="text-slate-500 text-xs font-medium mt-1">
+          Your personal digital library
+        </p>
+      </div>
+
+      <div class="flex items-center gap-3 flex-wrap">
+        <!-- Format chips (clickable quick filters) -->
+        <div id="formatChips" class="flex items-center gap-2">
+          <!-- Dynamically populated -->
+        </div>
+
+        <div class="w-px h-5 bg-slate-700 hidden-divider"></div>
+
+        <!-- Book count -->
+        <span id="headerCount" class="text-xs text-slate-500 font-semibold tabular-nums">0 books</span>
+
+        <div class="w-px h-5 bg-slate-700"></div>
+
+        <button id="duplicatesBtn"
+          class="flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-500/30 text-orange-400 hover:text-white hover:border-orange-500 hover:bg-orange-500/10 text-xs font-bold uppercase tracking-widest transition-all relative"
+          title="Show potential duplicate files">
+          <i class="fas fa-copy"></i>
+          <span class="btn-label">Duplicates</span>
+          <span id="duplicateBadge"
+            class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>
+        </button>
+
+        <div class="w-px h-5 bg-slate-700"></div>
+
+        <button id="syncBtn"
+          class="flex items-center gap-2 px-4 py-2 rounded-xl border border-indigo-500/30 text-indigo-400 hover:text-white hover:border-indigo-500 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
+          title="Sync file system with Google Sheets">
+          <i class="fas fa-sync-alt"></i>
+          <span class="btn-label">Sync Library</span>
+        </button>
+
+        <button id="scanBtn"
+          class="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
+          title="Force a full scan and bypass cache">
+          <span class="btn-label">Force Scan</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Table -->
+    <div class="table-container">
+      <!-- Sortable column headers -->
+      <div class="table-header-row">
+        <div class="th" style="cursor: default">#</div>
+        <div class="th" id="th-title" data-sort="title">
+          Title / Author
+          <i class="fas fa-sort sort-icon"></i>
+        </div>
+        <div class="th" id="th-tags" data-sort="tags">
+          Tags
+          <i class="fas fa-sort sort-icon"></i>
+        </div>
+        <div class="th" id="th-ext" data-sort="ext">
+          Format
+          <i class="fas fa-sort sort-icon"></i>
+        </div>
+        <div class="th" id="th-size" data-sort="size">
+          Size
+          <i class="fas fa-sort sort-icon"></i>
+        </div>
+        <div class="th" style="justify-content: center; cursor: default">
+          View
+        </div>
+        <div class="th" style="justify-content: center; cursor: default">
+          Get
+        </div>
+      </div>
+
+      <!-- Desktop Filters -->
+      <div class="filter-row">
+        <div></div>
+        <div class="search-wrap pr-2">
+          <i class="fas fa-search"></i>
+          <input type="text" id="searchInput" class="filter-input" placeholder="Search title or author…" />
+        </div>
+        <div class="pr-2">
+          <select id="tagFilter" class="filter-input">
+            <option value="">All tags</option>
+          </select>
+        </div>
+        <div class="pr-2">
+          <select id="typeFilter" class="filter-input">
+            <option value="">All formats</option>
+          </select>
+        </div>
+        <div class="pr-2">
+          <input type="number" id="minSize" class="filter-input" placeholder="Min MB…" min="0" step="1" />
+        </div>
+        <div></div>
+        <div></div>
+      </div>
+
+      <!-- Mobile Filter Bar -->
+      <div class="mobile-filter-bar" id="mobileFilterBar">
+        <div class="search-wrap">
+          <i class="fas fa-search"></i>
+          <input type="text" id="mobileSearch" class="filter-input" placeholder="Search title or author…" />
+        </div>
+        <div class="mobile-filter-row">
+          <select id="mobileTagFilter" class="filter-input">
+            <option value="">All tags</option>
+          </select>
+          <select id="mobileTypeFilter" class="filter-input">
+            <option value="">All formats</option>
+          </select>
+        </div>
+        <div class="mobile-filter-row">
+          <input type="number" id="mobileMinSize" class="filter-input" placeholder="Min MB…" min="0" step="1" />
+        </div>
+      </div>
+
+      <!-- Result count row -->
+      <div class="result-count">
+        <span id="resultCount">0 books</span>
+        <span id="sortLabel" class="text-slate-600"></span>
+      </div>
+
+      <!-- Book rows -->
+      <div id="bookGrid"></div>
+
+      <!-- Empty state (inside table) -->
+      <div id="emptyState" class="flex-col items-center justify-center py-24 text-slate-600">
+        <div class="w-16 h-16 bg-slate-900 rounded-full flex items-center justify-center mb-5 border border-slate-800">
+          <i class="fas fa-book-open text-3xl opacity-20"></i>
+        </div>
+        <p class="text-base font-black text-slate-500 tracking-tight">
+          No books found
+        </p>
+        <p class="text-xs font-medium mt-1">
+          Try a different search or scan your library
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Preview Modal -->
+  <div id="previewModal" class="fixed inset-0 z-[100] items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/90 backdrop-blur-sm" id="modalOverlay"></div>
+    <div class="modal-inner">
+      <div class="modal-header">
+        <div class="modal-title">
+          <div class="modal-icon"><i class="fas fa-eye"></i></div>
+          <span id="previewTitle">Preview</span>
+        </div>
+        <button id="closeModal" class="close-btn" aria-label="Close preview">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div id="previewContent"></div>
+    </div>
+  </div>
+
+  <!-- Sync Confirmation Modal -->
+  <div id="syncModal" class="fixed inset-0 z-[100] items-center justify-center p-4 hidden">
+    <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
+    <div class="modal-inner max-w-2xl relative">
+      <div class="modal-header">
+        <div class="modal-title">
+          <div class="modal-icon"><i class="fas fa-sync-alt"></i></div>
+          <span>Sync Library Preview</span>
+        </div>
+      </div>
+      <div class="p-6">
+        <p class="text-sm text-slate-400 mb-6" id="syncSummary">
+          Scanning file system...
+        </p>
+
+        <div id="syncDetails" class="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+        </div>
+
+        <div class="flex items-center justify-end gap-3 mt-8 pt-6 border-t border-white/5">
+          <button id="cancelSync"
+            class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
+            Cancel
+          </button>
+          <button id="confirmSync"
+            class="hidden px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-indigo-500/20">
+            Execute Sync
           </button>
         </div>
-        <div id="previewContent"></div>
       </div>
     </div>
+  </div>
 
-      </div>
-    </div>
-
-    <!-- Sync Confirmation Modal -->
-    <div
-      id="syncModal"
-      class="fixed inset-0 z-[100] items-center justify-center p-4 hidden"
-    >
-      <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
-      <div class="modal-inner max-w-2xl relative">
-        <div class="modal-header">
-          <div class="modal-title">
-            <div class="modal-icon"><i class="fas fa-sync-alt"></i></div>
-            <span>Sync Library Preview</span>
-          </div>
+  <!-- Delete Confirmation Modal -->
+  <div id="deleteConfirmModal" class="fixed inset-0 z-[110] items-center justify-center p-4 hidden">
+    <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
+    <div class="modal-inner max-w-md relative border-rose-500/20 shadow-2xl shadow-rose-500/10">
+      <div class="modal-header border-rose-500/10 bg-rose-500/5">
+        <div class="modal-title text-rose-400">
+          <div class="modal-icon bg-rose-500/10 text-rose-500"><i class="fas fa-trash-alt"></i></div>
+          <span>Confirm Deletion</span>
         </div>
-        <div class="p-6">
-          <p class="text-sm text-slate-400 mb-6" id="syncSummary">
-            Scanning file system...
+      </div>
+      <div class="p-8">
+        <div class="mb-6">
+          <p class="text-sm text-slate-300 font-medium leading-relaxed">
+            Are you sure you want to permanently delete this file?
           </p>
-          
-          <div id="syncDetails" class="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-            <!-- Added/Deleted lists -->
-          </div>
+          <p id="deleteFilePath"
+            class="text-[10px] text-slate-500 mt-3 p-3 bg-slate-950 rounded-lg break-all font-mono border border-white/5">
+          </p>
+          <p class="text-[10px] text-rose-500/60 mt-4 font-bold uppercase tracking-widest">
+            <i class="fas fa-exclamation-triangle mr-1"></i> This action cannot be undone.
+          </p>
+        </div>
 
-          <div class="flex items-center justify-end gap-3 mt-8 pt-6 border-t border-white/5">
-            <button id="cancelSync" class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
-              Cancel
-            </button>
-            <button id="confirmSync" class="hidden px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-indigo-500/20">
-              Execute Sync
-            </button>
-          </div>
+        <div class="flex items-center justify-end gap-3 pt-6 border-t border-white/5">
+          <button id="cancelDeleteBtn"
+            class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
+            Cancel
+          </button>
+          <button id="confirmDeleteBtn"
+            class="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-rose-500/20">
+            Permanently Delete
+          </button>
         </div>
       </div>
     </div>
+  </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div
-      id="deleteConfirmModal"
-      class="fixed inset-0 z-[110] items-center justify-center p-4 hidden"
-    >
-      <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
-      <div class="modal-inner max-w-md relative border-rose-500/20 shadow-2xl shadow-rose-500/10">
-        <div class="modal-header border-rose-500/10 bg-rose-500/5">
-          <div class="modal-title text-rose-400">
-            <div class="modal-icon bg-rose-500/10 text-rose-500"><i class="fas fa-trash-alt"></i></div>
-            <span>Confirm Deletion</span>
-          </div>
-        </div>
-        <div class="p-8">
-          <div class="mb-6">
-            <p class="text-sm text-slate-300 font-medium leading-relaxed">
-              Are you sure you want to permanently delete this file?
-            </p>
-            <p id="deleteFilePath" class="text-[10px] text-slate-500 mt-3 p-3 bg-slate-950 rounded-lg break-all font-mono border border-white/5"></p>
-            <p class="text-[10px] text-rose-500/60 mt-4 font-bold uppercase tracking-widest">
-              <i class="fas fa-exclamation-triangle mr-1"></i> This action cannot be undone.
-            </p>
-          </div>
+  <!-- Jump to Top Button -->
+  <button id="jumpToTop" class="jump-to-top hidden" aria-label="Jump to top" title="Jump to top">
+    <i class="fas fa-chevron-up"></i>
+  </button>
 
-          <div class="flex items-center justify-end gap-3 pt-6 border-t border-white/5">
-            <button id="cancelDeleteBtn" class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
-              Cancel
-            </button>
-            <button id="confirmDeleteBtn" class="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider transition-all shadow-lg shadow-rose-500/20">
-              Permanently Delete
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+  <script type="module" src="app.js"></script>
+</body>
 
-    <!-- Jump to Top Button -->
-    <button
-      id="jumpToTop"
-      class="jump-to-top hidden"
-      aria-label="Jump to top"
-      title="Jump to top"
-    >
-      <i class="fas fa-chevron-up"></i>
-    </button>
-
-    <script type="module" src="app.js"></script>
-  </body>
 </html>

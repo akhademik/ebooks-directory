@@ -49,7 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchBooks();
   fetchDuplicates();
   checkScanStatus();
-  
+
   startScan(false);
 
   EL.scanBtn().addEventListener("click", () => startScan(true));
@@ -145,6 +145,49 @@ document.addEventListener("DOMContentLoaded", () => {
     },
     { passive: true },
   );
+
+  // ── Mobile filter bar sync ──────────────────────────────────────────────────
+  const mobileSearch = document.getElementById("mobileSearch");
+  const mobileTag = document.getElementById("mobileTagFilter");
+  const mobileType = document.getElementById("mobileTypeFilter");
+  const mobileMinSize = document.getElementById("mobileMinSize");
+
+  if (mobileSearch) {
+    mobileSearch.addEventListener("input", () => {
+      EL.searchInput().value = mobileSearch.value;
+      setShowingDuplicates(false);
+      syncDuplicatesBtnState();
+      resetAndRender();
+    });
+  }
+  if (mobileType) {
+    mobileType.addEventListener("change", () => {
+      EL.typeFilter().value = mobileType.value;
+      setShowingDuplicates(false);
+      setActiveFormat(mobileType.value);
+      syncChips();
+      syncDuplicatesBtnState();
+      resetAndRender();
+    });
+  }
+  if (mobileTag) {
+    mobileTag.addEventListener("change", () => {
+      EL.tagFilter().value = mobileTag.value;
+      setShowingDuplicates(false);
+      setActiveTag(mobileTag.value);
+      updateSortHeaders();
+      syncDuplicatesBtnState();
+      resetAndRender();
+    });
+  }
+  if (mobileMinSize) {
+    mobileMinSize.addEventListener("input", () => {
+      EL.minSize().value = mobileMinSize.value;
+      setShowingDuplicates(false);
+      syncDuplicatesBtnState();
+      resetAndRender();
+    });
+  }
 });
 
 // ─── Data & Orchestration ───────────────────────────────────────────────────
@@ -201,7 +244,6 @@ async function startScan(force = false, isResuming = false) {
       const data = await fetchScanStatusApi();
       const { isScanning, isEnriching, isSyncing, results, enrichment, duplicateProgress } = data;
 
-      // Update duplicate progress if calculation is active
       if (duplicateProgress && state.isCalculatingDuplicates) {
         setDuplicatePercent(duplicateProgress.percent);
         if (state.isShowingDuplicates) {
@@ -228,14 +270,6 @@ async function startScan(force = false, isResuming = false) {
         if (enrichment.current > lastProcessed) {
           lastProcessed = enrichment.current;
           fetchBooks(false);
-        }
-      }
-
-      if (!isScanning && !isEnriching && !isSyncing) {
-        // Only stop polling if enrichment is done AND duplicate calculation is done (if it was active)
-        if (!state.isCalculatingDuplicates || (duplicateProgress && duplicateProgress.percent === 100)) {
-           // Keep polling if we're not explicitly in a "startScan" context? 
-           // Actually, it's better to keep the poll alive if the server is doing background work.
         }
       }
     } catch (err) {
@@ -268,14 +302,14 @@ async function handleSyncClick() {
 async function handleConfirmSync() {
   const confirmBtn = EL.confirmSync();
   const summary = EL.syncSummary();
-  
+
   confirmBtn.disabled = true;
   confirmBtn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-2"></i> Executing...`;
-  
+
   try {
     await executeSyncApi();
     handleCancelSync();
-    startScan(true); 
+    startScan(true);
   } catch (err) {
     summary.innerHTML = `<span class="text-red-400">Execution Error: ${err.message}</span>`;
     confirmBtn.disabled = false;
@@ -293,7 +327,7 @@ function handleCancelSync() {
 async function toggleDuplicatesView() {
   const isShowing = toggleDuplicates();
   syncDuplicatesBtnState();
-  
+
   if (isShowing) {
     clearDeletedInSession();
     if (state.isCalculatingDuplicates) {
@@ -314,8 +348,8 @@ async function fetchDuplicates(shouldRender = true) {
   try {
     setCalculatingDuplicates(true);
     if (state.isShowingDuplicates && shouldRender) {
-       btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating...`;
-       renderDuplicateLoading();
+      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i><span class="btn-label"> Calculating...</span>`;
+      renderDuplicateLoading();
     }
     setDuplicateResults(await fetchDuplicatesApi());
     if (state.isShowingDuplicates && shouldRender) renderDuplicates();
@@ -335,7 +369,7 @@ function finalizeDuplicatesUI(originalHtml) {
   const btn = EL.duplicatesBtn();
   if (state.isShowingDuplicates) {
     const badgeHtml = `<span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>`;
-    btn.innerHTML = `<i class="fas fa-copy"></i> Duplicates ${badgeHtml}`;
+    btn.innerHTML = `<i class="fas fa-copy"></i><span class="btn-label"> Duplicates</span> ${badgeHtml}`;
     updateDuplicateBadge();
   } else {
     btn.innerHTML = originalHtml;
@@ -346,7 +380,7 @@ async function executeDelete() {
   if (!state.pendingDeletePath) return;
   const location = state.pendingDeletePath;
   const btn = EL.confirmDeleteBtn();
-  
+
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Deleting...';
 
@@ -366,33 +400,24 @@ async function executeDelete() {
 
 function handleSuccessfulDelete(location) {
   addDeletedInSession(location);
-  // Instead of manual DOM manipulation, simply re-render the duplicate view.
-  // The rendering logic will now automatically pick up the path from deletedInSession.
   renderDuplicates();
 }
 
 async function refreshDataAfterDelete() {
-  // Update main books list in background
   fetchBooks(false);
-  
-  // For duplicates, the backend already updated its cache in-place.
-  // We just need to fetch the updated results without triggering a new scan.
+
   try {
     const updatedResults = await fetchDuplicatesApi();
     const freshCount = updatedResults.stats.totalGroups;
-    
-    // BUG FIX: If we are currently showing duplicates, do NOT overwrite the full results
-    // because that would cause deleted files to vanish immediately.
+
     if (!state.isShowingDuplicates) {
       setDuplicateResults(updatedResults);
     }
-    
-    // Always re-render if showing duplicates (it will use the old results but new deletedInSession)
+
     if (state.isShowingDuplicates) {
       renderDuplicates();
     }
-    
-    // Update badge with the fresh count from server
+
     updateDuplicateBadge(freshCount);
   } catch (err) {
     console.error("Error updating duplicates after delete:", err);

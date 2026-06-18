@@ -128,7 +128,7 @@ export function updateFilters() {
   const currentFormat = state.activeFormat;
 
   chipsContainer.innerHTML = `<button class="stat-chip ${!currentFormat ? "active" : ""}" data-format="">All</button>`;
-  
+
   sortedExts.forEach((ext) => {
     chipsContainer.innerHTML += `<button class="stat-chip ${currentFormat === ext ? "active" : ""}" data-format="${ext}">${ext.toUpperCase()}</button>`;
   });
@@ -154,6 +154,36 @@ export function updateFilters() {
       tagSelect.appendChild(opt);
     });
   }
+
+  // Sync mobile selects
+  syncMobileFilters(sortedExts, sortedTags);
+}
+
+function syncMobileFilters(sortedExts, sortedTags) {
+  const mobileType = document.getElementById("mobileTypeFilter");
+  const mobileTag = document.getElementById("mobileTagFilter");
+
+  if (mobileType) {
+    mobileType.innerHTML = '<option value="">All formats</option>';
+    sortedExts.forEach((ext) => {
+      const opt = document.createElement("option");
+      opt.value = ext;
+      opt.textContent = ext.toUpperCase();
+      if (ext === state.activeFormat) opt.selected = true;
+      mobileType.appendChild(opt);
+    });
+  }
+
+  if (mobileTag) {
+    mobileTag.innerHTML = '<option value="">All tags</option>';
+    sortedTags.forEach((tag) => {
+      const opt = document.createElement("option");
+      opt.value = tag;
+      opt.textContent = tag;
+      if (tag === state.activeTag) opt.selected = true;
+      mobileTag.appendChild(opt);
+    });
+  }
 }
 
 export function updateSortHeaders() {
@@ -177,7 +207,7 @@ export function updateSortHeaders() {
     const dirArrow = state.sortDir === "asc" ? "↑" : "↓";
     sortInfo += `Sorted by ${labels[state.sortKey] || state.sortKey} (${dirArrow})`;
   }
-  
+
   if (state.activeTag) {
     sortInfo += (sortInfo ? " | " : "") + `Filter: Tag "${state.activeTag}" <span class="clear-tag" style="cursor:pointer;color:#f87171;margin-left:4px;font-weight:bold;font-size:14px;" title="Clear tag filter">×</span>`;
   }
@@ -188,6 +218,10 @@ export function updateSortHeaders() {
   const tagSelect = EL.tagFilter();
   if (tagSelect) {
     tagSelect.value = state.activeTag || "";
+  }
+  const mobileTagSelect = document.getElementById("mobileTagFilter");
+  if (mobileTagSelect) {
+    mobileTagSelect.value = state.activeTag || "";
   }
 
   const clearBtn = labelEl.querySelector(".clear-tag");
@@ -242,10 +276,8 @@ export function getFilteredBooks() {
       } else if (state.sortKey === "tags") {
         const tagsA = Array.isArray(a.tags) ? a.tags : [];
         const tagsB = Array.isArray(b.tags) ? b.tags : [];
-        // Sort by first tag, or empty string if no tags
         va = tagsA.length > 0 ? removeAccents(tagsA[0]) : "";
         vb = tagsB.length > 0 ? removeAccents(tagsB[0]) : "";
-        // Tie-breaker: number of tags
         if (va === vb) {
           va = tagsA.length;
           vb = tagsB.length;
@@ -270,8 +302,6 @@ export function updateCountLabels(filteredCount, totalCount) {
 
   if (resultCount) {
     resultCount.textContent = `${filteredStr} book${filteredCount !== 1 ? "s" : ""}`;
-  } else {
-    console.error("[UI] resultCount element not found in updateCountLabels!");
   }
 
   if (headerCount) {
@@ -280,8 +310,6 @@ export function updateCountLabels(filteredCount, totalCount) {
     } else {
       headerCount.textContent = `${filteredStr} / ${totalStr} books`;
     }
-  } else {
-    console.error("[UI] headerCount element not found in updateCountLabels!");
   }
 }
 
@@ -302,7 +330,6 @@ export function getBookMetadata(book) {
   if (book.cover && book.cover.startsWith("http")) {
     coverUrl = book.cover;
   } else if (book.rowIndex && ext === "epub") {
-    // Only request local cover for supported format (EPUB)
     coverUrl = `/api/cover/${book.rowIndex}`;
   }
 
@@ -340,12 +367,12 @@ export function syncDuplicatesBtnState() {
   if (state.isShowingDuplicates) {
     btn.classList.add(...activeClasses);
     if (state.isCalculatingDuplicates) {
-      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i> Calculating ${state.duplicatePercent}%`;
+      btn.innerHTML = `<i class="fas fa-circle-notch fa-spin mr-1"></i><span class="btn-label"> Calculating ${state.duplicatePercent}%</span>`;
     }
   } else {
     btn.classList.remove(...activeClasses);
     const badgeHtml = `<span id="duplicateBadge" class="hidden absolute -top-2 -right-2 px-2 py-0.5 bg-orange-600 text-white text-[10px] rounded-full">0</span>`;
-    btn.innerHTML = `<i class="fas fa-copy"></i> Duplicates ${badgeHtml}`;
+    btn.innerHTML = `<i class="fas fa-copy"></i><span class="btn-label"> Duplicates</span> ${badgeHtml}`;
     updateDuplicateBadge();
   }
 }
@@ -356,60 +383,72 @@ export function getTagStyles(tag) {
     hash = tag.charCodeAt(i) + ((hash << 5) - hash);
   }
   const h = Math.abs(hash) % 360;
-  // Use HSL for consistent saturation and lightness
   return `background: hsla(${h}, 70%, 40%, 0.15); color: hsl(${h}, 90%, 80%); border-color: hsla(${h}, 70%, 50%, 0.2);`;
 }
 
 export function generateBookRowInnerHtml({ book, displayIndex, metadata }) {
   const { ext, initials, stars, ratingText, coverUrl } = metadata;
-  const goodreadsUrl = book.goodreadsId ? `https://www.goodreads.com/book/show/${book.goodreadsId}` : "";
+  const goodreadsUrl = book.goodreadsId
+    ? `https://www.goodreads.com/book/show/${book.goodreadsId}`
+    : "";
   const titleHtml = goodreadsUrl
     ? `<a href="${goodreadsUrl}" target="_blank" rel="noopener" title="View on Goodreads">${escHtml(book.title)}</a>`
     : escHtml(book.title);
 
-  // Use a fallback for cover error to prevent console spam and broken UI
-  const coverHtml = coverUrl 
-    ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.onerror=null; this.parentElement.classList.add('no-cover'); this.remove();">` 
+  const coverHtml = coverUrl
+    ? `<img src="${coverUrl}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.onerror=null; this.parentElement.classList.add('no-cover'); this.remove();">`
     : "";
 
   const tags = Array.isArray(book.tags) ? book.tags : [];
   const tagsHtml = tags
-    .map(tag => {
+    .map((tag) => {
       const style = getTagStyles(tag);
       return `<span class="tag-pill" style="${style}" title="${escHtml(tag)}">${escHtml(tag)}</span>`;
     })
     .join("");
 
+  const previewDisabled = !metadata.canPreview;
+
   return `
-     <div class="row-idx">${displayIndex}</div>
-     <div class="book-info">
-         <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}"
-              data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
-             ${coverHtml}
-         </div>
-         <div class="book-text">
-             <div class="book-title">${titleHtml}</div>
-             <div class="book-author">
-               ${escHtml(book.author || "")}
-               ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
-             </div>
-             ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
-         </div>
-     </div>
-     <div class="tags-cell">${tagsHtml}</div>
-     <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
-     <div class="size-cell">${book.size || "—"} MB</div>
-     <div class="action-cell">
-         <button class="icon-btn ${metadata.canPreview ? "" : "disabled"}" title="${metadata.canPreview ? "Preview" : "Preview not available"}"
-                 data-action="preview" ${metadata.canPreview ? "" : 'disabled aria-disabled="true"'}>
-             <i class="fas fa-eye"></i>
-         </button>
-     </div>
-     <div class="action-cell">
-         <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download"><i class="fas fa-download"></i></a>
-     </div>
-     ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
-   `;
+    <div class="row-idx">${displayIndex}</div>
+
+    <div class="book-info">
+      <div class="cover-thumb" role="button" tabindex="0" aria-label="Preview ${escHtml(book.title)}"
+           data-book-index="${escHtml(String(book.rowIndex))}" data-letters="${escHtml(initials)}">
+        ${coverHtml}
+      </div>
+      <div class="book-text">
+        <div class="book-title">${titleHtml}</div>
+        <div class="book-author">
+          ${escHtml(book.author || "")}
+          ${book.year && book.year !== "N/A" ? `<span class="book-year">(${escHtml(book.year)})</span>` : ""}
+        </div>
+        ${stars ? `<div class="book-rating"><span class="stars">${stars}</span><span class="rating-val">${ratingText}</span></div>` : ""}
+      </div>
+    </div>
+
+    <div class="tags-cell">${tagsHtml}</div>
+
+    <div class="book-row-meta">
+      <div><span class="format-badge badge-${ext}">${ext.toUpperCase()}</span></div>
+      <div class="size-cell">${book.size || "—"} MB</div>
+      <div class="action-cell">
+        <button class="icon-btn ${previewDisabled ? "disabled" : ""}"
+                title="${previewDisabled ? "Preview not available" : "Preview"}"
+                data-action="preview"
+                ${previewDisabled ? 'disabled aria-disabled="true"' : ""}>
+          <i class="fas fa-eye"></i>
+        </button>
+      </div>
+      <div class="action-cell">
+        <a class="icon-btn download" href="/api/download/${book.rowIndex}" title="Download">
+          <i class="fas fa-download"></i>
+        </a>
+      </div>
+    </div>
+
+    ${book.status === "manual" ? '<div class="manual-tag">MANUAL</div>' : ""}
+  `;
 }
 
 export function attachRowEventListeners(row, book, canPreview) {
@@ -481,7 +520,7 @@ export function renderBooks(books, append = false) {
     grid.appendChild(fragment);
   } else {
     const currentRows = Array.from(grid.children);
-    
+
     if (currentRows.length > slice.length) {
       for (let i = slice.length; i < currentRows.length; i++) {
         currentRows[i].remove();
@@ -663,7 +702,7 @@ export function generateSyncSectionHtml({
 export function renderDuplicateLoading() {
   const grid = EL.bookGrid();
   const empty = EL.emptyState();
-  
+
   if (empty) empty.classList.remove("visible");
   if (grid) {
     grid.innerHTML = `
@@ -697,21 +736,20 @@ export function updateDuplicateBadge(count) {
 
 export function renderDuplicates(append = false) {
   if (!state.isShowingDuplicates || !state.duplicateResults) return;
-  
+
   const grid = EL.bookGrid();
   const empty = EL.emptyState();
   const countLabel = EL.resultCount();
-  
+
   if (!grid || !empty || !countLabel) return;
-  
+
   if (!append) {
     grid.innerHTML = "";
     resetDuplicatesPagination();
   }
-  
+
   const { confirmed, probable, possible, stats } = state.duplicateResults;
-  
-  // Flatten all groups with metadata for pagination
+
   const allGroups = [
     ...confirmed.map(g => ({ ...g, type: "Confirmed", badge: "bg-rose-500/10 text-rose-500 border-rose-500/20" })),
     ...probable.map(g => ({ ...g, type: "Probable", badge: "bg-amber-500/10 text-amber-500 border-amber-500/20" })),
@@ -721,7 +759,7 @@ export function renderDuplicates(append = false) {
   if (!append) {
     countLabel.textContent = `Found ${stats.totalGroups} duplicate groups (${stats.totalWastedFormatted} wasted)`;
   }
-  
+
   if (allGroups.length === 0) {
     empty.classList.add("visible");
     return;
@@ -755,10 +793,9 @@ export function renderDuplicates(append = false) {
 function createDuplicateGroup(group) {
   const groupEl = document.createElement("div");
   groupEl.className = "col-span-full bg-slate-900/40 rounded-2xl border border-white/5 p-4 mb-4";
-  // content-visibility: auto is a performance booster for long lists
   groupEl.style.contentVisibility = "auto";
   groupEl.style.containIntrinsicSize = "0 150px";
-  
+
   groupEl.innerHTML = `
     <div class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-3 flex items-center justify-between">
       <span>Group: ${escHtml(group.key || "Unknown")}</span>
@@ -766,15 +803,15 @@ function createDuplicateGroup(group) {
     </div>
     <div class="space-y-1"></div>
   `;
-  
+
   const filesContainer = groupEl.querySelector(".space-y-1");
   const files = group.files || [];
   const sortedFiles = sortFilesByRecommendation(files);
-  
+
   sortedFiles.forEach(file => {
     filesContainer.appendChild(createDuplicateFileRow(file));
   });
-  
+
   return groupEl;
 }
 
@@ -792,7 +829,7 @@ function createDuplicateFileRow(file) {
   const isDeleted = state.deletedInSession.has(filePath);
   const isRec = file.recommended && !isDeleted;
   const fileEl = document.createElement("div");
-  
+
   const pathParts = filePath.split("/");
   const fileName = pathParts.pop() || "Unnamed File";
   const dirPath = pathParts.length > 0 ? pathParts.join("/") + "/" : "./";
@@ -810,7 +847,7 @@ function createDuplicateFileRow(file) {
 
   fileEl.className = `flex items-center justify-between py-2 border-b last:border-0 p-2 rounded-lg ${bgClass} ${isDeleted ? "deleted-file" : "hover:bg-white/5"}`;
   fileEl.id = `dup-${btoa(encodeURIComponent(filePath)).replace(/=/g, "")}`;
-  
+
   fileEl.innerHTML = `
     <div class="flex-1 min-w-0 pr-4">
       <div class="text-base font-bold ${titleColor} truncate flex items-center" title="${escHtml(fileName)}">
@@ -829,11 +866,11 @@ function createDuplicateFileRow(file) {
       <i class="fas ${isDeleted ? "fa-check" : "fa-trash-alt"} mr-1"></i> ${isDeleted ? "Deleted" : "Delete"}
     </button>
   `;
-  
+
   if (!isDeleted && filePath) {
     fileEl.querySelector(".delete-file-btn").addEventListener("click", () => showDeleteModal(filePath));
   }
-  
+
   return fileEl;
 }
 
