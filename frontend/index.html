@@ -7,8 +7,9 @@
   <title>Ebook Manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-  <link rel="stylesheet" href="style.css" />
-
+  <link rel="stylesheet" href="styles/ui.css" />
+  <link rel="stylesheet" href="styles/responsive.css" />
+  <link rel="stylesheet" href="styles/preview.css" />
 </head>
 
 <body>
@@ -36,16 +37,12 @@
           <i class="fas fa-book-open text-indigo-500" style="font-size: 22px"></i>
           Ebook Manager
         </h1>
-        <p class="text-slate-500 text-xs font-medium mt-1">
-          Your personal digital library
-        </p>
+        <p class="text-slate-500 text-xs font-medium mt-1">Your personal digital library</p>
       </div>
 
       <div class="flex items-center gap-3 flex-wrap">
-        <!-- Format chips (clickable quick filters) -->
-        <div id="formatChips" class="flex items-center gap-2">
-          <!-- Dynamically populated -->
-        </div>
+        <!-- Format chips -->
+        <div id="formatChips" class="flex items-center gap-2"></div>
 
         <div class="w-px h-5 bg-slate-700 hidden-divider"></div>
 
@@ -72,9 +69,11 @@
           <span class="btn-label">Sync Library</span>
         </button>
 
+        <!-- Force Scan — thêm icon fa-bolt để mobile không bị trống -->
         <button id="scanBtn"
           class="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-indigo-500/50 hover:bg-indigo-500/10 text-xs font-bold uppercase tracking-widest transition-all"
           title="Force a full scan and bypass cache">
+          <i class="fas fa-bolt"></i>
           <span class="btn-label">Force Scan</span>
         </button>
       </div>
@@ -86,27 +85,19 @@
       <div class="table-header-row">
         <div class="th" style="cursor: default">#</div>
         <div class="th" id="th-title" data-sort="title">
-          Title / Author
-          <i class="fas fa-sort sort-icon"></i>
+          Title / Author <i class="fas fa-sort sort-icon"></i>
         </div>
         <div class="th" id="th-tags" data-sort="tags">
-          Tags
-          <i class="fas fa-sort sort-icon"></i>
+          Tags <i class="fas fa-sort sort-icon"></i>
         </div>
         <div class="th" id="th-ext" data-sort="ext">
-          Format
-          <i class="fas fa-sort sort-icon"></i>
+          Format <i class="fas fa-sort sort-icon"></i>
         </div>
         <div class="th" id="th-size" data-sort="size">
-          Size
-          <i class="fas fa-sort sort-icon"></i>
+          Size <i class="fas fa-sort sort-icon"></i>
         </div>
-        <div class="th" style="justify-content: center; cursor: default">
-          View
-        </div>
-        <div class="th" style="justify-content: center; cursor: default">
-          Get
-        </div>
+        <div class="th" style="justify-content: center; cursor: default">View</div>
+        <div class="th" style="justify-content: center; cursor: default">Get</div>
       </div>
 
       <!-- Desktop Filters -->
@@ -161,17 +152,13 @@
       <!-- Book rows -->
       <div id="bookGrid"></div>
 
-      <!-- Empty state (inside table) -->
+      <!-- Empty state -->
       <div id="emptyState" class="flex-col items-center justify-center py-24 text-slate-600">
         <div class="w-16 h-16 bg-slate-900 rounded-full flex items-center justify-center mb-5 border border-slate-800">
           <i class="fas fa-book-open text-3xl opacity-20"></i>
         </div>
-        <p class="text-base font-black text-slate-500 tracking-tight">
-          No books found
-        </p>
-        <p class="text-xs font-medium mt-1">
-          Try a different search or scan your library
-        </p>
+        <p class="text-base font-black text-slate-500 tracking-tight">No books found</p>
+        <p class="text-xs font-medium mt-1">Try a different search or scan your library</p>
       </div>
     </div>
   </main>
@@ -189,6 +176,29 @@
           <i class="fas fa-times"></i>
         </button>
       </div>
+
+      <!-- Reading controls — chỉ hiện khi preview EPUB -->
+      <div id="readingControls" class="reading-controls hidden">
+        <div class="rc-group">
+          <label class="rc-label">Font</label>
+          <div class="rc-font-btns" id="fontPicker">
+            <button class="rc-font-btn active" data-font="literata">Literata</button>
+            <button class="rc-font-btn" data-font="noto">Noto Serif</button>
+            <button class="rc-font-btn" data-font="lora">Lora</button>
+            <button class="rc-font-btn" data-font="opensans">Open Sans</button>
+            <button class="rc-font-btn" data-font="inter">Inter</button>
+          </div>
+        </div>
+        <div class="rc-group rc-group--size">
+          <label class="rc-label">Size</label>
+          <div class="rc-size-row">
+            <button class="rc-size-btn" id="fontSizeDown">A−</button>
+            <span class="rc-size-val" id="fontSizeVal">16px</span>
+            <button class="rc-size-btn" id="fontSizeUp">A+</button>
+          </div>
+        </div>
+      </div>
+
       <div id="previewContent"></div>
     </div>
   </div>
@@ -204,13 +214,8 @@
         </div>
       </div>
       <div class="p-6">
-        <p class="text-sm text-slate-400 mb-6" id="syncSummary">
-          Scanning file system...
-        </p>
-
-        <div id="syncDetails" class="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-        </div>
-
+        <p class="text-sm text-slate-400 mb-6" id="syncSummary">Scanning file system...</p>
+        <div id="syncDetails" class="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar"></div>
         <div class="flex items-center justify-end gap-3 mt-8 pt-6 border-t border-white/5">
           <button id="cancelSync"
             class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">
@@ -247,7 +252,6 @@
             <i class="fas fa-exclamation-triangle mr-1"></i> This action cannot be undone.
           </p>
         </div>
-
         <div class="flex items-center justify-end gap-3 pt-6 border-t border-white/5">
           <button id="cancelDeleteBtn"
             class="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-white transition-colors">

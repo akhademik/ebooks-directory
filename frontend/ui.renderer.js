@@ -548,6 +548,103 @@ export function renderBooks(books, append = false) {
 export function hidePreview() {
   EL.previewModal().classList.remove("open");
   document.body.style.overflow = "";
+  // Hide reading controls when modal closes
+  const rc = document.getElementById("readingControls");
+  if (rc) rc.classList.add("hidden");
+}
+
+// ─── Reading Controls (font + size) ──────────────────────────────────────────
+
+const EPUB_FONTS = {
+  literata: { name: "Literata", family: "'Literata', Georgia, serif", gFont: "Literata:ital,wght@0,300..700;1,300..700" },
+  noto: { name: "Noto Serif", family: "'Noto Serif', 'Times New Roman', serif", gFont: "Noto+Serif:ital,wght@0,400;0,700;1,400" },
+  lora: { name: "Lora", family: "'Lora', Georgia, serif", gFont: "Lora:ital,wght@0,400;0,700;1,400" },
+  opensans: { name: "Open Sans", family: "'Open Sans', 'Segoe UI', sans-serif", gFont: "Open+Sans:wght@400;600" },
+  inter: { name: "Inter", family: "'Inter', system-ui, sans-serif", gFont: null }, // already loaded by app
+};
+
+const SIZE_MIN = 12;
+const SIZE_MAX = 26;
+const SIZE_STEP = 1;
+
+// Persist preferences in sessionStorage so they survive re-opens within same session
+function loadPrefs() {
+  try {
+    return JSON.parse(sessionStorage.getItem("epubPrefs") || "{}");
+  } catch { return {}; }
+}
+function savePrefs(prefs) {
+  try { sessionStorage.setItem("epubPrefs", JSON.stringify(prefs)); } catch { /* ignore */ }
+}
+
+function applyFont(fontKey) {
+  const font = EPUB_FONTS[fontKey] || EPUB_FONTS.literata;
+  const body = document.getElementById("epubBody");
+  if (body) body.style.fontFamily = font.family;
+
+  // Load Google Font if needed
+  if (font.gFont && !document.getElementById(`gfont-${fontKey}`)) {
+    const link = document.createElement("link");
+    link.id = `gfont-${fontKey}`;
+    link.rel = "stylesheet";
+    link.href = `https://fonts.googleapis.com/css2?family=${font.gFont}&display=swap`;
+    document.head.appendChild(link);
+  }
+
+  // Update button states
+  document.querySelectorAll(".rc-font-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.font === fontKey);
+  });
+
+  savePrefs({ ...loadPrefs(), font: fontKey });
+}
+
+function applySize(px) {
+  const body = document.getElementById("epubBody");
+  if (body) body.style.fontSize = `${px}px`;
+  const val = document.getElementById("fontSizeVal");
+  if (val) val.textContent = `${px}px`;
+  savePrefs({ ...loadPrefs(), size: px });
+}
+
+function initReadingControls() {
+  const rc = document.getElementById("readingControls");
+  if (!rc) return;
+  rc.classList.remove("hidden");
+
+  const prefs = loadPrefs();
+  const currentFont = prefs.font || "literata";
+  const currentSize = Math.min(SIZE_MAX, Math.max(SIZE_MIN, prefs.size || 16));
+
+  // Apply saved prefs immediately
+  applyFont(currentFont);
+  applySize(currentSize);
+
+  // Font buttons
+  rc.querySelectorAll(".rc-font-btn").forEach(btn => {
+    // Clone to clear old listeners
+    const fresh = btn.cloneNode(true);
+    btn.replaceWith(fresh);
+    fresh.addEventListener("click", () => applyFont(fresh.dataset.font));
+  });
+
+  // Size buttons
+  const downBtn = document.getElementById("fontSizeDown");
+  const upBtn = document.getElementById("fontSizeUp");
+
+  const freshDown = downBtn.cloneNode(true);
+  const freshUp = upBtn.cloneNode(true);
+  downBtn.replaceWith(freshDown);
+  upBtn.replaceWith(freshUp);
+
+  freshDown.addEventListener("click", () => {
+    const cur = loadPrefs().size || 16;
+    applySize(Math.max(SIZE_MIN, cur - SIZE_STEP));
+  });
+  freshUp.addEventListener("click", () => {
+    const cur = loadPrefs().size || 16;
+    applySize(Math.min(SIZE_MAX, cur + SIZE_STEP));
+  });
 }
 
 export async function showPreview(book) {
@@ -585,19 +682,34 @@ export async function showPreview(book) {
                     </div>
                 </div>`;
     } else if (data.type === "epub") {
+      const scopeClass = data.scopeClass || "epub-content";
+
+      // Inject epub's own scoped CSS
+      let styleTag = document.getElementById("epub-preview-style");
+      if (!styleTag) {
+        styleTag = document.createElement("style");
+        styleTag.id = "epub-preview-style";
+        document.head.appendChild(styleTag);
+      }
+      styleTag.textContent = data.css || "";
+
       const chaptersHtml = data.chapters
         .map(
           (ch) =>
-            `<div style="margin-bottom:40px;" class="epub-preview-content">${ch.content}</div>`,
+            `<div class="${scopeClass} epub-preview-content" style="margin-bottom:40px;">${ch.content}</div>`
         )
-        .join("");
+        .join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:32px 0;">');
+
       content.innerHTML = `
-                <div style="max-width:680px;margin:0 auto;">
-                    ${chaptersHtml}
-                    <div style="padding:48px 0;text-align:center;color:#334155;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,0.05);">
-                        End of preview
-                    </div>
-                </div>`;
+        <div id="epubBody" style="max-width:700px;margin:0 auto;">
+          ${chaptersHtml}
+          <div style="padding:48px 0;text-align:center;color:#334155;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid rgba(255,255,255,0.05);">
+            End of preview
+          </div>
+        </div>`;
+
+      // Show reading controls and wire them up
+      initReadingControls();
     }
   } catch (err) {
     content.innerHTML = `
